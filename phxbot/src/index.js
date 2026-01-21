@@ -116,10 +116,10 @@ client.on(Events.InteractionCreate, async (interaction) => {
   if (id === 'ui:modal:createorg') {
     const modal = new ModalBuilder().setCustomId('ui:modal:createorg').setTitle('Create Organization')
       .addComponents(
-        makeInput('org_id','org_id','Example: ballas'),
-        makeInput('name','name','Example: Ballas'),
-        makeInput('type','type','MAFIA or LEGAL'),
-        makeInput('base_role_id','base_role_id','Role ID for base org role')
+        makeInput('org_id','Organization Code (optional)','Leave empty to auto-generate (ex: ballas)'),
+        makeInput('name','Organization Name','Example: Ballas'),
+        makeInput('type','Type','ILEGAL or LEGAL'),
+        makeInput('base_role_id','Base Role ID','Role ID of the organization role (Ballas/LSPD etc.)')
       );
     return show(modal);
   }
@@ -140,13 +140,26 @@ client.on(Events.InteractionCreate, async (interaction) => {
     return show(modal);
   }
 
+  if (id.startsWith('ui:modal:setlead:')) {
+    const org_id = id.split(':').at(-1);
+    const modal = new ModalBuilder().setCustomId(`ui:modal:setlead:${org_id}`).setTitle('Set Legal Leader Role')
+      .addComponents(makeInput('id','Role ID (Leader)','Paste role id'));
+    return show(modal);
+  }
+  if (id.startsWith('ui:modal:setcolead:')) {
+    const org_id = id.split(':').at(-1);
+    const modal = new ModalBuilder().setCustomId(`ui:modal:setcolead:${org_id}`).setTitle('Set Legal Co-Leader Role')
+      .addComponents(makeInput('id','Role ID (Co-Leader)','Paste role id'));
+    return show(modal);
+  }
+
   if (id.startsWith('ui:modal:addrank:')) {
     const org_id = id.split(':').at(-1);
     const modal = new ModalBuilder().setCustomId(`ui:modal:addrank:${org_id}`).setTitle('Add/Update Rank')
       .addComponents(
-        makeInput('rank_key','rank_key','LEADER / COLEADER / MEMBER or CHIEF / HR / MEMBER'),
-        makeInput('level','level','Example: 100'),
-        makeInput('role_id','role_id','Role ID')
+        makeInput('rank_key','Rank name','Example: MEMBER / LEADER / COLEADER / HR'),
+        makeInput('level','Priority (number)','Higher = more important (ex: 100)'),
+        makeInput('role_id','Discord Role ID','Role ID that represents this rank')
       );
     return show(modal);
   }

@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS orgs (
   name TEXT NOT NULL,
   type TEXT NOT NULL CHECK(type IN ('MAFIA','LEGAL')),
   base_role_id TEXT,
+  leader_role_id TEXT,
+  coleader_role_id TEXT,
   is_active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP)
 );
@@ -84,13 +86,28 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 `);
 
+// ----
+// Lightweight migrations for existing DBs
+// ----
+function ensureColumn(table, col, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map(r=>r.name);
+  if (!cols.includes(col)) {
+    db.exec(ddl);
+  }
+}
+
+ensureColumn('orgs', 'leader_role_id', `ALTER TABLE orgs ADD COLUMN leader_role_id TEXT`);
+ensureColumn('orgs', 'coleader_role_id', `ALTER TABLE orgs ADD COLUMN coleader_role_id TEXT`);
+
 const defaults = [
   ['AUDIT_CHANNEL_ID',''],
   ['ALERT_CHANNEL_ID',''],
   ['WARN_CHANNEL_ID',''],
-  ['ERROR_CHANNEL_ID',''],
   ['ROLE_ADMIN_ID',''],
   ['ROLE_SUPERVISOR_ID',''],
+  // Global mafia leadership roles (required to use /fmenu for mafia orgs)
+  ['ROLE_MAFIA_LEADER_ID',''],
+  ['ROLE_MAFIA_COLEADER_ID',''],
   ['ROLE_PK_ID',''],
   ['ROLE_BAN_ID',''],
   ['ROLE_WARN_MANAGER_ID',''], // optional

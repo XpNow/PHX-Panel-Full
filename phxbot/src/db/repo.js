@@ -9,18 +9,22 @@ export function getOrg(db, org_id) { return db.prepare('SELECT * FROM orgs WHERE
 
 export function upsertOrg(db, org) {
   db.prepare(`
-    INSERT INTO orgs (org_id, name, type, base_role_id, is_active, created_at)
-    VALUES (:org_id, :name, :type, :base_role_id, :is_active, CURRENT_TIMESTAMP)
+    INSERT INTO orgs (org_id, name, type, base_role_id, leader_role_id, coleader_role_id, is_active, created_at)
+    VALUES (:org_id, :name, :type, :base_role_id, :leader_role_id, :coleader_role_id, :is_active, CURRENT_TIMESTAMP)
     ON CONFLICT(org_id) DO UPDATE SET
       name=excluded.name,
       type=excluded.type,
       base_role_id=excluded.base_role_id,
+      leader_role_id=excluded.leader_role_id,
+      coleader_role_id=excluded.coleader_role_id,
       is_active=excluded.is_active
   `).run({
     org_id: org.org_id,
     name: org.name,
     type: org.type,
     base_role_id: org.base_role_id ?? null,
+    leader_role_id: org.leader_role_id ?? null,
+    coleader_role_id: org.coleader_role_id ?? null,
     is_active: org.is_active ?? 1
   });
   db.prepare('INSERT OR IGNORE INTO lockdowns(org_id,is_locked) VALUES(?,0)').run(org.org_id);

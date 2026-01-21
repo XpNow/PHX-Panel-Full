@@ -11,7 +11,8 @@ if (!token || !clientId || !guildId) {
 }
 
 const commands = [
-  new SlashCommandBuilder().setName('fmenu').setDescription('Open faction dashboard'),
+  new SlashCommandBuilder().setName('fmenu').setDescription('Meniu organizatie (lider / co-lider)'),
+  new SlashCommandBuilder().setName('famenu').setDescription('Meniu admin (config / organizatii / warns)'),
   new SlashCommandBuilder()
     .setName('falert')
     .setDescription('Send global raid alert (factions)')
