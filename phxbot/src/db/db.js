@@ -3,25 +3,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export function openDb(dbPath) {
-  const dir = path.dirname(dbPath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const db = new Database(dbPath);
-  db.pragma('foreign_keys = ON');
+  db.pragma('journal_mode = WAL');
   return db;
 }
 
-export function getSetting(db, key, fallback = null) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  return row ? row.value : fallback;
+export function getSetting(db, key, fallback='') {
+  const row = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
+  return row?.value ?? fallback;
 }
 
 export function setSetting(db, key, value) {
-  db.prepare(
-    'INSERT INTO settings(key, value, updated_at) VALUES(?, ?, datetime(\'now\')) '
-    + 'ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
-  ).run(key, value);
+  db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value')
+    .run(key, String(value ?? ''));
 }
 
-export function nowIso() {
-  return new Date().toISOString();
-}
+export function nowIso() { return new Date().toISOString(); }
+export function addMinutesIso(minutes) { return new Date(Date.now() + minutes*60*1000).toISOString(); }
+export function addDaysIso(days) { return new Date(Date.now() + days*24*60*60*1000).toISOString(); }
+export function isExpired(iso) { return !iso || Date.parse(iso) <= Date.now(); }

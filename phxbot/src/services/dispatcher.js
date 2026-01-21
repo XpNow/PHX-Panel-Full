@@ -1,905 +1,762 @@
+import { MessageFlags, PermissionsBitField } from 'discord.js';
+import { nanoid } from 'nanoid';
+import { parseCustomId } from './router.js';
+import { actorContext, canEditSecurityConfig, canManageOrgs, canCreateOrg, canDeleteOrg, canManageThisOrg } from '../util/access.js';
+import { getSetting, setSetting, addMinutesIso, addDaysIso, isExpired } from '../db/db.js';
 import {
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  EmbedBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  StringSelectMenuBuilder
-} from 'discord.js';
-import { getActorContext, canUseFmenu, canManageMembers, canFalert } from '../util/access.js';
-import { fmenuRootPanel, accessDeniedPanel, placeholderPanel, simpleErr, simpleOk } from '../ui/panels.js';
-import {
-  listOrgs,
-  getOrgById,
-  getCooldown,
-  getMembership,
-  getLastOrg,
-  addAudit,
-  upsertOrg,
-  upsertOrgRank,
-  deleteOrg,
-  countOrgsByType,
-  countMembersByOrgType,
-  listMembershipsByOrg,
-  listCooldownsByOrg
+  counts, listOrgs, getOrg, upsertOrg, deleteOrgHard,
+  listOrgRanks, upsertOrgRank, removeOrgRank,
+  getMembership, setMembership, clearMembership, listMembersOfOrg,
+  getCooldown, setCooldown, listCooldowns,
+  getLockdown, setLockdown,
+  addAudit, applyPkCooldownToOrgMembers,
+  createWarn, getWarn, deactivateWarn
 } from '../db/repo.js';
-import { getSetting, setSetting } from '../db/db.js';
-import { orgColor, COLORS } from '../ui/theme.js';
-import { addMemberToOrg, removeMemberFromOrg } from './orgService.js';
-import { sendFalert } from './falert.js';
+import { baseEmbed, COLORS } from '../ui/embeds.js';
+import { btn, rowButtons, select } from '../ui/components.js';
 
-// In-memory pending flows (ephemeral UI). Safe for single-process bot.
-// (Kept for future multi-step flows; current build uses only modals + Copy ID.)
+function mentionRole(id){ return id ? `<@&${id}>` : '`(unset)`'; }
+function mentionChannel(id){ return id ? `<#${id}>` : '`(unset)`'; }
 
-const PER_PAGE = 15;
-
-
-export async function handleSlashCommand({ client, db, interaction }) {
-  if (interaction.commandName === 'fmenu') {
-    await interaction.deferReply({ ephemeral: true });
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    const ctx = getActorContext(db, member, interaction.guild.ownerId);
-    if (!canUseFmenu(ctx)) {
-      await interaction.editReply(accessDeniedPanel());
-      return;
+export async function safeDefer(interaction){
+  try {
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     }
-    const stats = await computeQuickStats(db);
-    await interaction.editReply(fmenuRootPanel({ ctx, stats }));
+    return true;
+  } catch (e) {
+    if (e?.code === 10062) return false; // expired
+    throw e;
+  }
+}
+
+async function safeEdit(interaction, payload){
+  try { await interaction.editReply(payload); } 
+  catch (e){ if (e?.code !== 10062) throw e; }
+}
+
+function homeView(db){
+  const c = counts(db);
+  const e = baseEmbed('🛠️ Control Center', COLORS.GLOBAL, 'Alege o sectiune.');
+  e.addFields(
+    { name: '🕶️ Mafia', value: `Orgs: **${c.mafiaOrgs}** • Members: **${c.mafiaMembers}**`, inline: true },
+    { name: '🚓 Legal', value: `Orgs: **${c.legalOrgs}** • Members: **${c.legalMembers}**`, inline: true },
+    { name: '⏳ Cooldowns', value: `PK: **${c.pk}** • Ban: **${c.ban}**`, inline: true },
+    { name: '🔒 Lockdowns', value: `Active: **${c.lockdowns}**`, inline: true },
+  );
+  const rows = [
+    rowButtons(
+      btn('ui:div:MAFIA','Mafia'),
+      btn('ui:div:LEGAL','Legal'),
+      btn('ui:config:home','Config'),
+      btn('ui:diag:home','Diagnostics')
+    ),
+    rowButtons(
+      btn('ui:search:open','Search Player')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function configHomeView(ctx){
+  const e = baseEmbed('⚙️ Server Config', COLORS.GLOBAL, 'Setari server & organizatii. Unele sectiuni sunt Owner-only.');
+  e.addFields(
+    { name:'📌 Channels', value: ctx.owner ? '✅ Owner' : '🔒 Owner only', inline:true },
+    { name:'🛡️ Access Roles', value: ctx.owner ? '✅ Owner' : '🔒 Owner only', inline:true },
+    { name:'⏱️ Rate Limits', value: ctx.owner ? '✅ Owner' : '🔒 Owner only', inline:true },
+    { name:'🏷️ Organizations', value: (ctx.owner||ctx.isAdmin||ctx.isSupervisor) ? '✅ Admin/Supervisor' : '⛔ No access', inline:true },
+  );
+  const rows = [
+    rowButtons(
+      btn('ui:config:channels','Channels'),
+      btn('ui:config:roles','Access Roles'),
+      btn('ui:config:rates','Rate Limits'),
+      btn('ui:config:orgs','Organizations')
+    ),
+    rowButtons(btn('ui:home:open','Back'))
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function channelsView(db){
+  const e = baseEmbed('📌 Channels', COLORS.GLOBAL, 'Owner only. Seteaza ID-urile canalelor.');
+  e.addFields(
+    { name:'Audit', value: mentionChannel(getSetting(db,'AUDIT_CHANNEL_ID','')), inline:true },
+    { name:'Alerts', value: mentionChannel(getSetting(db,'ALERT_CHANNEL_ID','')), inline:true },
+    { name:'Warns', value: mentionChannel(getSetting(db,'WARN_CHANNEL_ID','')), inline:true },
+    { name:'Errors', value: mentionChannel(getSetting(db,'ERROR_CHANNEL_ID','')), inline:true },
+  );
+  const rows = [
+    rowButtons(
+      btn('ui:modal:setch:AUDIT_CHANNEL_ID','Set Audit'),
+      btn('ui:modal:setch:ALERT_CHANNEL_ID','Set Alerts'),
+      btn('ui:modal:setch:WARN_CHANNEL_ID','Set Warns'),
+      btn('ui:modal:setch:ERROR_CHANNEL_ID','Set Errors'),
+    ),
+    rowButtons(btn('ui:config:home','Back'))
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function rolesView(db){
+  const e = baseEmbed('🛡️ Access Roles', COLORS.GLOBAL, 'Owner only. Seteaza rolurile de acces.');
+  e.addFields(
+    { name:'Admin', value: mentionRole(getSetting(db,'ROLE_ADMIN_ID','')), inline:true },
+    { name:'Supervisor', value: mentionRole(getSetting(db,'ROLE_SUPERVISOR_ID','')), inline:true },
+    { name:'Warn Manager', value: mentionRole(getSetting(db,'ROLE_WARN_MANAGER_ID','')) || '`(uses Supervisor)`', inline:true },
+    { name:'PK Role', value: mentionRole(getSetting(db,'ROLE_PK_ID','')), inline:true },
+    { name:'Ban Role', value: mentionRole(getSetting(db,'ROLE_BAN_ID','')), inline:true },
+  );
+  const rows = [
+    rowButtons(
+      btn('ui:modal:setrole:ROLE_ADMIN_ID','Set Admin'),
+      btn('ui:modal:setrole:ROLE_SUPERVISOR_ID','Set Supervisor'),
+      btn('ui:modal:setrole:ROLE_WARN_MANAGER_ID','Set WarnMgr')
+    ),
+    rowButtons(
+      btn('ui:modal:setrole:ROLE_PK_ID','Set PK'),
+      btn('ui:modal:setrole:ROLE_BAN_ID','Set Ban'),
+      btn('ui:config:home','Back')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function ratesView(db){
+  const e = baseEmbed('⏱️ Rate Limits', COLORS.GLOBAL, 'Owner only. Configurare rate limits.');
+  e.addFields(
+    { name:'Admin per 5 min', value: getSetting(db,'RATE_ADMIN_PER5','30'), inline:true },
+    { name:'Supervisor per 5 min', value: getSetting(db,'RATE_SUP_PER5','50'), inline:true },
+    { name:'Leader per 5 min', value: getSetting(db,'RATE_LEADER_PER5','15'), inline:true },
+    { name:'CoLeader per 5 min', value: getSetting(db,'RATE_COLEADER_PER5','10'), inline:true },
+    { name:'/falert cooldown (min)', value: getSetting(db,'FALERT_COOLDOWN_MIN','30'), inline:true },
+  );
+  const rows = [
+    rowButtons(
+      btn('ui:modal:setint:RATE_ADMIN_PER5','Set Admin'),
+      btn('ui:modal:setint:RATE_SUP_PER5','Set Sup'),
+      btn('ui:modal:setint:RATE_LEADER_PER5','Set Leader'),
+      btn('ui:modal:setint:RATE_COLEADER_PER5','Set CoLeader'),
+    ),
+    rowButtons(
+      btn('ui:modal:setint:FALERT_COOLDOWN_MIN','Set Falert'),
+      btn('ui:config:home','Back')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function orgsView(db, ctx, type=null){
+  const orgs = listOrgs(db, type);
+  const e = baseEmbed('🏷️ Organizations', COLORS.GLOBAL, 'Creeaza / editeaza organizatii (MAFIA / LEGAL).');
+  e.addFields(
+    { name:'Total', value: `Mafia: **${counts(db).mafiaOrgs}** • Legal: **${counts(db).legalOrgs}**`, inline:false }
+  );
+  const opts = orgs.slice(0,25).map(o=>({ label:`${o.name} (${o.type})`, value:o.org_id, description:o.org_id }));
+  const rows = [];
+  if (opts.length) rows.push(select('ui:org:select','Select Organization…',opts));
+  rows.push(rowButtons(
+    btn('ui:modal:createorg','Create Org'),
+    btn('ui:modal:deleteorg','Delete Org'),
+    btn('ui:config:home','Back')
+  ));
+  return { embeds:[e], components: rows };
+}
+
+function orgDetailView(db, org_id){
+  const org = getOrg(db, org_id);
+  const color = org.type === 'LEGAL' ? COLORS.LEGAL : COLORS.MAFIA;
+  const e = baseEmbed(`${org.type==='LEGAL'?'🚓':'🕶️'} ${org.name} — Settings`, color, `org_id: \`${org.org_id}\``);
+  e.addFields(
+    { name:'Type', value: org.type, inline:true },
+    { name:'Base Role', value: mentionRole(org.base_role_id), inline:true },
+    { name:'Lockdown', value: getLockdown(db, org_id).is_locked ? '🔒 ON' : 'OFF', inline:true },
+  );
+  const ranks = listOrgRanks(db, org_id);
+  e.addFields({ name:'Rank Mapping', value: ranks.length ? ranks.map(r=>`• **${r.rank_key}** (${r.level}) → ${mentionRole(r.role_id)}`).join('\n') : '`(none)`', inline:false });
+  const rows = [
+    rowButtons(
+      btn(`ui:modal:setbaserole:${org_id}`,'Set Base Role'),
+      btn(`ui:modal:addrank:${org_id}`,'Add/Update Rank'),
+      btn(`ui:modal:delrank:${org_id}`,'Remove Rank'),
+      btn(`ui:org:lock:${org_id}`,'Toggle Lockdown')
+    ),
+    rowButtons(
+      btn('ui:config:orgs','Back'),
+      btn(`ui:orgpanel:open:${org_id}`,'Open Panel'),
+      btn(`ui:warns:open:${org_id}`,'Warns')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function divisionView(db, type){
+  const orgs = listOrgs(db, type);
+  const color = type==='LEGAL'?COLORS.LEGAL:COLORS.MAFIA;
+  const e = baseEmbed(type==='LEGAL'?'🚓 Legal Control':'🕶️ Mafia Control', color, 'Selecteaza o organizatie.');
+  const opts = orgs.slice(0,25).map(o=>({ label:o.name, value:o.org_id, description:o.org_id }));
+  const rows = [];
+  if (opts.length) rows.push(select(`ui:divsel:${type}`,'Choose Organization…',opts));
+  rows.push(rowButtons(btn('ui:home:open','Back')));
+  return { embeds:[e], components: rows };
+}
+
+function orgPanelView(db, ctx, org_id){
+  const org = getOrg(db, org_id);
+  const color = org.type==='LEGAL'?COLORS.LEGAL:COLORS.MAFIA;
+  const lock = getLockdown(db, org_id).is_locked ? '🔒 ON' : 'OFF';
+  const members = listMembersOfOrg(db, org_id);
+  const leaders = members.filter(m=>['LEADER','CHIEF'].includes(m.rank_key)).length;
+  const coleaders = members.filter(m=>['COLEADER','HR'].includes(m.rank_key)).length;
+  const e = baseEmbed(`${org.type==='LEGAL'?'🚓':'🕶️'} ${org.name} — Command Panel`, color);
+  e.setDescription(`Scope: **${org.name}** • Lockdown: **${lock}**`);
+  e.addFields(
+    { name:'Members', value: `**${members.length}**`, inline:true },
+    { name:'Leaders', value: `**${leaders}**`, inline:true },
+    { name:'Co-Leaders', value: `**${coleaders}**`, inline:true },
+  );
+  const rows = [
+    rowButtons(
+      btn(`ui:modal:add:${org_id}`,'Add','Success','➕'),
+      btn(`ui:modal:remove:${org_id}`,'Remove','Danger','➖'),
+      btn(`ui:modal:pkremove:${org_id}`,'PK Remove','Danger','💀'),
+      btn(`ui:modal:search:${org_id}`,'Search','Secondary','🔎')
+    ),
+    rowButtons(
+      btn(`ui:roster:open:${org_id}:0`,'Roster'),
+      btn(`ui:cool:open:${org_id}:PK:0`,'Cooldowns'),
+      btn(`ui:org:settings:${org_id}`,'Org Settings'),
+      btn('ui:home:open','Home')
+    )
+  ];
+  // Org settings only for admins/sup/owner, but button stays; handler checks
+  return { embeds:[e], components: rows };
+}
+
+function rosterView(db, org_id, page=0){
+  const org = getOrg(db, org_id);
+  const color = org.type==='LEGAL'?COLORS.LEGAL:COLORS.MAFIA;
+  const all = listMembersOfOrg(db, org_id);
+  const pageSize = 15;
+  const pages = Math.max(1, Math.ceil(all.length / pageSize));
+  const p = Math.min(Math.max(0, page), pages-1);
+  const slice = all.slice(p*pageSize, p*pageSize+pageSize);
+
+  const e = baseEmbed(`📋 ${org.name} — Roster (${p+1}/${pages})`, color, 'Use Search for a specific user.');
+  e.addFields({ name:'Members', value: slice.length ? slice.map((m,i)=>`${p*pageSize+i+1}. <@${m.user_id}> — **${m.rank_key}**`).join('\n') : '`(none)`', inline:false });
+  const rows = [
+    rowButtons(
+      btn(`ui:roster:open:${org_id}:${Math.max(0,p-1)}`,'Prev'),
+      btn(`ui:roster:open:${org_id}:${Math.min(pages-1,p+1)}`,'Next'),
+      btn(`ui:modal:search:${org_id}`,'Search'),
+      btn(`ui:orgpanel:open:${org_id}`,'Back')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function cooldownsView(db, org_id, kind='PK', page=0){
+  const org = getOrg(db, org_id);
+  const color = COLORS.COOLDOWN;
+  const all = listCooldowns(db, null, kind); // org_id not stored for PK delete-org, so show global kind
+  const pageSize = 12;
+  const pages = Math.max(1, Math.ceil(all.length / pageSize));
+  const p = Math.min(Math.max(0, page), pages-1);
+  const slice = all.slice(p*pageSize, p*pageSize+pageSize);
+  const e = baseEmbed(`⏳ Cooldowns — ${kind} (${p+1}/${pages})`, color);
+  e.addFields({ name:'Entries', value: slice.length ? slice.map(c=>`• <@${c.user_id}> — expires <t:${Math.floor(Date.parse(c.expires_at)/1000)}:R>`).join('\n') : '`(none)`', inline:false });
+  const rows = [
+    rowButtons(
+      btn(`ui:cool:open:${org_id}:${kind}:${Math.max(0,p-1)}`,'Prev'),
+      btn(`ui:cool:open:${org_id}:${kind}:${Math.min(pages-1,p+1)}`,'Next'),
+      btn(`ui:cool:open:${org_id}:PK:0`,'PK'),
+      btn(`ui:cool:open:${org_id}:BAN:0`,'BAN'),
+      btn(`ui:orgpanel:open:${org_id}`,'Back')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+function diagView(db, interaction){
+  const e = baseEmbed('🩺 Diagnostics', COLORS.GLOBAL, 'Health checks.');
+  const guild = interaction.guild;
+  const me = guild.members.me;
+  const perms = me.permissions;
+  const need = [
+    PermissionsBitField.Flags.SendMessages,
+    PermissionsBitField.Flags.EmbedLinks,
+    PermissionsBitField.Flags.ManageRoles,
+    PermissionsBitField.Flags.ReadMessageHistory
+  ];
+  const missing = need.filter(p=>!perms.has(p));
+  e.addFields(
+    { name:'Bot perms', value: missing.length ? `❌ Missing: ${missing.map(x=>`\`${x.toString()}\``).join(', ')}` : '✅ OK', inline:false },
+    { name:'DB', value: '✅ Connected', inline:false }
+  );
+  return { embeds:[e], components:[ rowButtons(btn('ui:home:open','Back')) ] };
+}
+
+function warnsView(db, ctx, org_id){
+  const org = getOrg(db, org_id);
+  const e = baseEmbed(`⚠️ Warns — ${org.name}`, COLORS.WARN, 'Add/remove warns (Supervisor/Owner only).');
+  e.addFields({ name:'Access', value: ctx.canWarnManage ? '✅ Allowed' : '🔒 Supervisor/Owner only', inline:false });
+  const rows = [
+    rowButtons(
+      btn(`ui:modal:addwarn:${org_id}`,'Add Warn','Danger','➕'),
+      btn(`ui:modal:removewarn:${org_id}`,'Remove Warn','Secondary','➖'),
+      btn(`ui:orgpanel:open:${org_id}`,'Back')
+    )
+  ];
+  return { embeds:[e], components: rows };
+}
+
+async function applyRolesForMembership(db, interaction, targetMember, org_id, rank_key){
+  const org = getOrg(db, org_id);
+  if (!org?.base_role_id) return;
+  const ranks = listOrgRanks(db, org_id);
+  const rankRole = ranks.find(r=>r.rank_key===rank_key)?.role_id;
+
+  // Remove other org roles (base roles) to enforce single org total
+  const allOrgs = listOrgs(db);
+  for (const o of allOrgs) {
+    if (o.base_role_id && targetMember.roles.cache.has(o.base_role_id)) {
+      await targetMember.roles.remove(o.base_role_id).catch(()=>{});
+      const otherRanks = listOrgRanks(db, o.org_id);
+      for (const r of otherRanks) {
+        if (targetMember.roles.cache.has(r.role_id)) await targetMember.roles.remove(r.role_id).catch(()=>{});
+      }
+    }
+  }
+  await targetMember.roles.add(org.base_role_id).catch(()=>{});
+  if (rankRole) await targetMember.roles.add(rankRole).catch(()=>{});
+}
+
+async function removeOrgRoles(db, targetMember, org_id){
+  const org = getOrg(db, org_id);
+  if (org?.base_role_id) await targetMember.roles.remove(org.base_role_id).catch(()=>{});
+  const ranks = listOrgRanks(db, org_id);
+  for (const r of ranks) await targetMember.roles.remove(r.role_id).catch(()=>{});
+}
+
+function parseUserId(input){
+  if (!input) return null;
+  const m = input.match(/(\d{15,20})/);
+  return m ? m[1] : null;
+}
+
+export async function handleSlashCommand(db, interaction){
+  const ok = await safeDefer(interaction);
+  if (!ok) return;
+
+  const ctx = actorContext(db, interaction);
+
+  if (interaction.commandName === 'fmenu') {
+    await safeEdit(interaction, homeView(db));
     return;
   }
 
   if (interaction.commandName === 'falert') {
-    await interaction.deferReply({ ephemeral: true });
-    const member = await interaction.guild.members.fetch(interaction.user.id);
-    const ctx = getActorContext(db, member, interaction.guild.ownerId);
-    if (!canFalert(ctx)) {
-      await interaction.editReply(simpleErr('Nu ai acces la /falert.'));
+    const loc = interaction.options.getString('locatie', true);
+    const det = interaction.options.getString('detalii', false) || '';
+    const alertCh = getSetting(db,'ALERT_CHANNEL_ID','');
+    if (!alertCh) {
+      await safeEdit(interaction, { content: '❌ ALERT_CHANNEL_ID not set. Owner: /fmenu -> Config -> Channels.', components: [], embeds: [] });
       return;
     }
-    const locatie = interaction.options.getString('locatie', true);
-    const detalii = interaction.options.getString('detalii', false) || '';
-    const res = await sendFalert({ client, db, interaction, actor: interaction.user, locatie, detalii, ctx });
-    await interaction.editReply(res);
+    // global cooldown
+    const next = Number(getSetting(db,'FALERT_NEXT_ALLOWED','0')||'0');
+    const now = Date.now();
+    const cdMin = Number(getSetting(db,'FALERT_COOLDOWN_MIN','30')||'30');
+    if (next && now < next) {
+      await safeEdit(interaction, { content: `⏳ /falert cooldown. Try again <t:${Math.floor(next/1000)}:R>.`, components: [], embeds: [] });
+      return;
+    }
+    setSetting(db,'FALERT_NEXT_ALLOWED', String(now + cdMin*60*1000));
+    addAudit(db,'FALERT', interaction.user.id, null, null, { loc, det });
+
+    const ch = await interaction.guild.channels.fetch(alertCh).catch(()=>null);
+    if (!ch) {
+      await safeEdit(interaction, { content: '❌ Alert channel not found (check ID).', components: [], embeds: [] });
+      return;
+    }
+
+    const orgs = listOrgs(db);
+    const pings = orgs.filter(o=>o.base_role_id).map(o=>`<@&${o.base_role_id}>`);
+    const msg1 = pings.slice(0, Math.ceil(pings.length/2)).join(' ');
+    const msg2 = pings.slice(Math.ceil(pings.length/2)).join(' ');
+    const embed = baseEmbed('🚨 ALERTA RAZIE', COLORS.WARN, `📍 **Locatie:** ${loc}${det?`\n📝 **Detalii:** ${det}`:''}`);
+    await ch.send({ content: msg1 || null, embeds:[embed] }).catch(()=>{});
+    if (msg2) await ch.send({ content: msg2 }).catch(()=>{});
+
+    await safeEdit(interaction, { content: '✅ Alert sent.', components: [], embeds: [] });
     return;
   }
 }
 
-export async function handleComponentInteraction({ client, db, interaction }) {
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  const ctx = getActorContext(db, member, interaction.guild.ownerId);
+export async function handleComponent(db, interaction){
+  // For components we ACK immediately too
+  const ok = await safeDefer(interaction);
+  if (!ok) return;
 
-  // Back to root
-  if (interaction.customId === 'fmenu:back:root') {
-    await interaction.update(fmenuRootPanel({ ctx, stats: await computeQuickStats(db) }));
-    return;
-  }
+  const ctx = actorContext(db, interaction);
+  ctx.canWarnManage = ctx.canWarnManage;
+  const { ns, action, args } = parseCustomId(interaction.customId);
 
-  // Config back buttons
-  if (interaction.isButton() && interaction.customId === 'global:config:back') {
-    await interaction.update(configPanel({ db, ctx }));
-    return;
-  }
-  if (interaction.isButton() && interaction.customId === 'cfg:org:back:list') {
-    await interaction.update(configOrgsPanel({ db, ctx }));
-    return;
-  }
-  if (interaction.isButton() && interaction.customId.startsWith('cfg:org:back:')) {
-    const orgId = interaction.customId.split(':').pop();
-    const org = getOrgById(db, orgId);
-    await interaction.update(configOrgDetailPanel({ db, org }));
-    return;
+  // Home/back
+  if (ns==='ui' && action==='home') {
+    await safeEdit(interaction, homeView(db)); return;
   }
 
-  // Root select (admin/sup)
-  if (interaction.isStringSelectMenu() && interaction.customId === 'fmenu:select:root') {
-    const v = interaction.values[0];
-    if (v.startsWith('div:')) {
-      const type = v.split(':')[1];
-      await interaction.update(orgPickerPanel({ db, ctx, type }));
-      return;
-    }
-    if (v === 'global:overview') {
-      await interaction.update(globalOverviewPanel({ db, ctx }));
-      return;
-    }
-    if (v === 'global:config') {
-      await interaction.update(configPanel({ db, ctx }));
-      return;
-    }
-    if (v === 'global:diag') {
-      await interaction.update(diagnosticsPanel({ db, ctx, guild: interaction.guild }));
-      return;
-    }
-    if (v === 'global:warns') {
-      if (!ctx.canWarnManage) {
-        await interaction.reply({ content: 'Nu ai acces la Warns.', ephemeral: true });
-        return;
-      }
-      await interaction.update(placeholderPanel('⚠️ Warns', 'Warns panel (v0.1 starter).', COLORS.WARN));
-      return;
-    }
+  // Division open
+  if (ns==='ui' && action==='div') {
+    const type = args[0];
+    await safeEdit(interaction, divisionView(db, type)); return;
   }
 
-  // Config section select
-  if (interaction.isStringSelectMenu() && interaction.customId === 'fmenu:select:config') {
-    const v = interaction.values[0];
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces la Config.', ephemeral: true });
-      return;
-    }
-    if (v === 'cfg:channels') {
-      await interaction.update(configChannelsPanel({ db, ctx }));
-      return;
-    }
-    if (v === 'cfg:roles') {
-      await interaction.update(configRolesPanel({ db, ctx }));
-      return;
-    }
-    if (v === 'cfg:orgs') {
-      await interaction.update(configOrgsPanel({ db, ctx }));
-      return;
-    }
-    if (v === 'cfg:ratelimits') {
-      await interaction.update(placeholderPanel('⏱️ Rate Limits', 'Rate limits UI (coming next). Pentru moment se poate seta din DB.', COLORS.GLOBAL));
-      return;
-    }
+  // Division select
+  if (ns==='ui' && action==='divsel') {
+    const type = args[0];
+    const org_id = interaction.values?.[0];
+    if (!org_id) { await safeEdit(interaction, divisionView(db,type)); return; }
+    await safeEdit(interaction, orgPanelView(db, ctx, org_id)); return;
   }
 
-  // Config: quick-set by ID buttons (channels/roles) - works even if select menus are buggy on some clients
-  if (interaction.isButton() && interaction.customId.startsWith('cfg:set:')) {
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces.', ephemeral: true });
-      return;
-    }
-    const parts = interaction.customId.split(':'); // cfg:set:channel:audit OR cfg:set:role:admin
-    const kind = parts[2];
-    const key = parts[3];
-    if (kind === 'channel') {
-      await interaction.showModal(setIdModal(`modal:cfg:set_channel:${key}`, `Set ${key.toUpperCase()} channel ID`, 'Channel ID (Copy ID)', 'Ex: 1452095867573239891'));
-      return;
-    }
-    if (kind === 'role') {
-      await interaction.showModal(setIdModal(`modal:cfg:set_role:${key}`, `Set ${key.toUpperCase()} role ID`, 'Role ID (Copy ID)', 'Ex: 1446223790014206075'));
-      return;
-    }
+  // Org panel open
+  if (ns==='ui' && action==='orgpanel') {
+    const org_id = args[0];
+    await safeEdit(interaction, orgPanelView(db, ctx, org_id)); return;
   }
 
-  // Config orgs: buttons
-  if (interaction.isButton() && interaction.customId === 'cfg:org:create') {
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces.', ephemeral: true });
-      return;
-    }
-    await interaction.showModal(createOrgModal());
-    return;
+  // Roster
+  if (ns==='ui' && action==='roster') {
+    const org_id = args[0];
+    const page = Number(args[1]||'0');
+    await safeEdit(interaction, rosterView(db, org_id, page)); return;
   }
 
-  if (interaction.isButton() && interaction.customId === 'cfg:org:delete') {
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces.', ephemeral: true });
-      return;
-    }
-    await interaction.showModal(deleteOrgModal());
-    return;
+  // Cooldowns
+  if (ns==='ui' && action==='cool') {
+    const org_id = args[0];
+    const kind = args[1] || 'PK';
+    const page = Number(args[2]||'0');
+    await safeEdit(interaction, cooldownsView(db, org_id, kind, page)); return;
   }
 
-  // Config orgs: pick org to edit
-  if (interaction.isStringSelectMenu() && interaction.customId === 'cfg:org:pick') {
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces.', ephemeral: true });
-      return;
-    }
-    const orgId = interaction.values[0];
-    const org = getOrgById(db, orgId);
-    await interaction.update(configOrgDetailPanel({ db, ctx, org }));
-    return;
+  // Config home
+  if (ns==='ui' && action==='config' && args[0]==='home') {
+    await safeEdit(interaction, configHomeView(ctx)); return;
+  }
+  if (ns==='ui' && action==='config' && args[0]==='channels') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    await safeEdit(interaction, channelsView(db)); return;
+  }
+  if (ns==='ui' && action==='config' && args[0]==='roles') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    await safeEdit(interaction, rolesView(db)); return;
+  }
+  if (ns==='ui' && action==='config' && args[0]==='rates') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    await safeEdit(interaction, ratesView(db)); return;
+  }
+  if (ns==='ui' && action==='config' && args[0]==='orgs') {
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    await safeEdit(interaction, orgsView(db, ctx)); return;
   }
 
-  // Org detail: add rank
-  if (interaction.isButton() && interaction.customId.startsWith('cfg:org:addrank:')) {
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.reply({ content: 'Nu ai acces.', ephemeral: true });
-      return;
-    }
-    const orgId = interaction.customId.split(':').pop();
-    await interaction.showModal(addRankModal(orgId));
-    return;
+  // Org select in config
+  if (ns==='ui' && action==='org' && args[0]==='select') {
+    const org_id = interaction.values?.[0];
+    if (!org_id) { await safeEdit(interaction, orgsView(db, ctx)); return; }
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
   }
 
-  // (Rank mapping uses Copy ID via modal; no RoleSelect flows.)
-
-  // Org picker selection (admin)
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('fmenu:pickorg:')) {
-    const orgId = interaction.values[0];
-    const org = getOrgById(db, orgId);
-    await interaction.update(orgPanel({ db, ctx, org }));
-    return;
+  // Org toggle lockdown
+  if (ns==='ui' && action==='org' && args[0]==='lock') {
+    const org_id = args[1];
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    const cur = getLockdown(db, org_id).is_locked ? 1:0;
+    setLockdown(db, org_id, cur?0:1, interaction.user.id);
+    addAudit(db,'TOGGLE_LOCKDOWN', interaction.user.id, null, org_id, {to:cur?0:1});
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
   }
 
-  // Org section select (scoped)
-  if (interaction.isStringSelectMenu() && interaction.customId.startsWith('fmenu:select:org:')) {
-    const orgId = interaction.customId.split(':').pop();
-    const org = getOrgById(db, orgId);
-    const v = interaction.values[0];
-    if (v === 'org:roster') {
-      await interaction.update(rosterPanel({ db, ctx, org, page: 0 }));
-      return;
-    }
-    if (v === 'org:actions') {
-      await interaction.update(orgActionsPanel({ db, ctx, org }));
-      return;
-    }
-    if (v === 'org:cooldowns') {
-      await interaction.update(cooldownsPanel({ db, ctx, org, page: 0 }));
-      return;
-    }
-    if (v === 'org:search') {
-      await interaction.showModal(searchModal(orgId));
-      return;
-    }
-    if (v === 'org:falert') {
-      if (!canFalert(ctx)) {
-        await interaction.reply({ content: 'Nu ai acces la Falert.', ephemeral: true });
-        return;
-      }
-      await interaction.showModal(falertModal());
-      return;
-    }
+  // Org settings button from panel
+  if (ns==='ui' && action==='org' && args[0]==='settings') {
+    const org_id = args[1];
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
   }
 
-  // Roster pagination
-  if (interaction.isButton() && interaction.customId.startsWith('org:roster:')) {
-    const parts = interaction.customId.split(':');
-    const orgId = parts[2];
-    const page = parseInt(parts[3] || '0', 10);
-    const org = getOrgById(db, orgId);
-    await interaction.update(rosterPanel({ db, ctx, org, page }));
-    return;
+  // Diagnostics
+  if (ns==='ui' && action==='diag') {
+    await safeEdit(interaction, diagView(db, interaction)); return;
   }
 
-  // Cooldowns pagination
-  if (interaction.isButton() && interaction.customId.startsWith('org:cooldowns:')) {
-    const parts = interaction.customId.split(':');
-    const orgId = parts[2];
-    const page = parseInt(parts[3] || '0', 10);
-    const org = getOrgById(db, orgId);
-    await interaction.update(cooldownsPanel({ db, ctx, org, page }));
-    return;
+  // Warns
+  if (ns==='ui' && action==='warns' && args[0]==='open') {
+    const org_id = args[1];
+    await safeEdit(interaction, warnsView(db, ctx, org_id)); return;
   }
 
-  // Action buttons
-  if (interaction.isButton() && interaction.customId.startsWith('org:btn:')) {
-    const [, , action, orgId] = interaction.customId.split(':');
-    const org = getOrgById(db, orgId);
-    if (!org) {
-      await interaction.reply({ content: 'Org invalid.', ephemeral: true });
-      return;
-    }
-    if (!canManageMembers(ctx, org)) {
-      await interaction.reply({ content: 'Nu ai acces la aceasta actiune.', ephemeral: true });
-      return;
-    }
-    if (action === 'add') {
-      await interaction.showModal(addMemberModal(orgId));
-      return;
-    }
-    if (action === 'rem') {
-      await interaction.showModal(removeMemberModal(orgId, false));
-      return;
-    }
-    if (action === 'pk') {
-      await interaction.showModal(removeMemberModal(orgId, true));
-      return;
-    }
-  }
+  // Default fallback
+  await safeEdit(interaction, { content:'Unhandled action.', components:[], embeds:[] });
 }
 
-export async function handleModalSubmit({ client, db, interaction }) {
-  const member = await interaction.guild.members.fetch(interaction.user.id);
-  const ctx = getActorContext(db, member, interaction.guild.ownerId);
+export async function handleModal(db, interaction){
+  const ok = await safeDefer(interaction);
+  if (!ok) return;
 
-  // ----- Config modals -----
-  if (interaction.customId.startsWith('modal:cfg:set_channel:')) {
-    await interaction.deferReply({ ephemeral: true });
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    const key = interaction.customId.split(':').pop();
-    const val = (interaction.fields.getTextInputValue('id') || '').trim();
-    const m = val.match(/\d{17,20}/);
-    if (!m) {
-      await interaction.editReply('ID invalid. Foloseste Copy ID din Discord.');
-      return;
-    }
-    const map = { audit: 'AUDIT_CHANNEL_ID', alert: 'ALERT_CHANNEL_ID', warn: 'WARN_CHANNEL_ID', error: 'ERROR_CHANNEL_ID' };
-    if (map[key]) setSetting(db, map[key], m[0]);
-    await interaction.editReply({ content: '✅ Salvat.', ephemeral: true });
-    return;
+  const ctx = actorContext(db, interaction);
+  const { ns, action, args } = parseCustomId(interaction.customId);
+
+  // Set channel ID (owner)
+  if (ns==='ui' && action==='modal' && args[0]==='setch') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    const key = args[1];
+    const val = interaction.fields.getTextInputValue('id').trim();
+    setSetting(db, key, val);
+    addAudit(db,'SET_CHANNEL', interaction.user.id, null, null, {key,val});
+    await safeEdit(interaction, channelsView(db)); return;
   }
 
-  if (interaction.customId.startsWith('modal:cfg:set_role:')) {
-    await interaction.deferReply({ ephemeral: true });
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    const key = interaction.customId.split(':').pop();
-    const val = (interaction.fields.getTextInputValue('id') || '').trim();
-    const m = val.match(/\d{17,20}/);
-    if (!m) {
-      await interaction.editReply('ID invalid. Foloseste Copy ID din Discord.');
-      return;
-    }
-    const map = { admin: 'ROLE_ADMIN_ID', supervisor: 'ROLE_SUPERVISOR_ID', warn: 'ROLE_WARN_MANAGER_ID', pk: 'ROLE_PK_ID', ban: 'ROLE_BAN_ID' };
-    if (map[key]) setSetting(db, map[key], m[0]);
-    await interaction.editReply({ content: '✅ Salvat.', ephemeral: true });
-    return;
+  // Set role ID (owner)
+  if (ns==='ui' && action==='modal' && args[0]==='setrole') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    const key = args[1];
+    const val = interaction.fields.getTextInputValue('id').trim();
+    setSetting(db, key, val);
+    addAudit(db,'SET_ROLE', interaction.user.id, null, null, {key,val});
+    await safeEdit(interaction, rolesView(db)); return;
   }
-  if (interaction.customId === 'modal:cfg:create_org') {
-    await interaction.deferReply({ ephemeral: true });
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    const orgId = interaction.fields.getTextInputValue('org_id').trim().toLowerCase();
+
+  // Set int (owner)
+  if (ns==='ui' && action==='modal' && args[0]==='setint') {
+    if (!canEditSecurityConfig(ctx)) { await safeEdit(interaction,{content:'🔒 Owner only.',embeds:[],components:[]}); return; }
+    const key = args[1];
+    const val = interaction.fields.getTextInputValue('n').trim();
+    if (!/^\d+$/.test(val)) { await safeEdit(interaction,{content:'❌ Must be a number.',embeds:[],components:[]}); return; }
+    setSetting(db, key, val);
+    addAudit(db,'SET_INT', interaction.user.id, null, null, {key,val});
+    await safeEdit(interaction, ratesView(db)); return;
+  }
+
+  // Create org (admin/sup/owner)
+  if (ns==='ui' && action==='modal' && args[0]==='createorg') {
+    if (!canCreateOrg(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    const org_id = interaction.fields.getTextInputValue('org_id').trim().toLowerCase();
     const name = interaction.fields.getTextInputValue('name').trim();
     const type = interaction.fields.getTextInputValue('type').trim().toUpperCase();
-    const baseRoleRaw = (interaction.fields.getTextInputValue('base_role_id') || '').trim();
-    const baseRoleMatch = baseRoleRaw.match(/[0-9]{17,20}/);
-    const baseRoleId = baseRoleMatch ? baseRoleMatch[0] : null;
-    if (!/^[a-z0-9_-]{2,32}$/.test(orgId)) {
-      await interaction.editReply('Org ID invalid. Foloseste doar litere mici, cifre, _ sau - (2-32).');
-      return;
+    const base_role_id = interaction.fields.getTextInputValue('base_role_id').trim();
+    if (!/^[a-z0-9_\-]{2,32}$/.test(org_id)) { await safeEdit(interaction,{content:'❌ org_id invalid (a-z0-9_-).',embeds:[],components:[]}); return; }
+    if (!['MAFIA','LEGAL'].includes(type)) { await safeEdit(interaction,{content:'❌ type must be MAFIA or LEGAL.',embeds:[],components:[]}); return; }
+    upsertOrg(db, {org_id,name,type,base_role_id,is_active:1});
+    addAudit(db,'CREATE_ORG', interaction.user.id, null, org_id, {name,type,base_role_id});
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
+  }
+
+  // Delete org (supervisor/owner) + apply PK cooldown 3d to all members
+  if (ns==='ui' && action==='modal' && args[0]==='deleteorg') {
+    if (!canDeleteOrg(ctx)) { await safeEdit(interaction,{content:'🔒 Only Supervisor/Owner can delete orgs.',embeds:[],components:[]}); return; }
+    const org_id = interaction.fields.getTextInputValue('org_id').trim().toLowerCase();
+    const confirm = interaction.fields.getTextInputValue('confirm').trim();
+    if (confirm !== 'DELETE') { await safeEdit(interaction,{content:'❌ Confirm failed. Type DELETE exactly.',embeds:[],components:[]}); return; }
+    const org = getOrg(db, org_id);
+    if (!org) { await safeEdit(interaction,{content:'❌ Org not found.',embeds:[],components:[]}); return; }
+
+    // Apply 3-day PK cooldown to everyone in that org (including leaders)
+    const { members, expires } = applyPkCooldownToOrgMembers(db, org_id, 3);
+
+    // Attempt to remove their roles in Discord (best effort)
+    for (const m of members) {
+      const gm = await interaction.guild.members.fetch(m.user_id).catch(()=>null);
+      if (gm) await removeOrgRoles(db, gm, org_id);
     }
-    if (!['MAFIA','LEGAL'].includes(type)) {
-      await interaction.editReply('Type invalid. Scrie MAFIA sau LEGAL.');
-      return;
-    }
-    upsertOrg(db, { org_id: orgId, name, type, base_role_id: baseRoleId, is_active: 1 });
-    addAudit(db, 'CONFIG_CREATE_ORG', interaction.user.id, null, orgId, { name, type, base_role_id: baseRoleId });
-    await interaction.editReply({ content: `✅ Organizatia **${name}** a fost creata.`, ephemeral: true });
+
+    // Hard delete org (membership rows cascade delete)
+    deleteOrgHard(db, org_id);
+    addAudit(db,'DELETE_ORG', interaction.user.id, null, org_id, {appliedPkUntil:expires, members:members.length});
+
+    await safeEdit(interaction, { content:`✅ Deleted org **${org.name}**. Applied PK cooldown (3 days) to **${members.length}** members.`, embeds:[], components:[ rowButtons(btn('ui:config:orgs','Back to Orgs')) ] });
     return;
   }
 
-  if (interaction.customId === 'modal:cfg:delete_org') {
-    await interaction.deferReply({ ephemeral: true });
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
+  // Set base role
+  if (ns==='ui' && action==='modal' && args[0]==='setbaserole') {
+    const org_id = args[1];
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    const role_id = interaction.fields.getTextInputValue('id').trim();
+    const org = getOrg(db, org_id);
+    upsertOrg(db, { ...org, base_role_id: role_id });
+    addAudit(db,'SET_BASE_ROLE', interaction.user.id, null, org_id, {role_id});
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
+  }
+
+  // Add/update rank
+  if (ns==='ui' && action==='modal' && args[0]==='addrank') {
+    const org_id = args[1];
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    const rank_key = interaction.fields.getTextInputValue('rank_key').trim().toUpperCase();
+    const levelS = interaction.fields.getTextInputValue('level').trim();
+    const role_id = interaction.fields.getTextInputValue('role_id').trim();
+    const level = Number(levelS);
+    if (!Number.isFinite(level)) { await safeEdit(interaction,{content:'❌ level must be number.',embeds:[],components:[]}); return; }
+    upsertOrgRank(db, {org_id, rank_key, level, role_id});
+    addAudit(db,'UPSERT_RANK', interaction.user.id, null, org_id, {rank_key, level, role_id});
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
+  }
+
+  // Remove rank
+  if (ns==='ui' && action==='modal' && args[0]==='delrank') {
+    const org_id = args[1];
+    if (!canManageOrgs(ctx)) { await safeEdit(interaction,{content:'⛔ No access.',embeds:[],components:[]}); return; }
+    const rank_key = interaction.fields.getTextInputValue('rank_key').trim().toUpperCase();
+    removeOrgRank(db, org_id, rank_key);
+    addAudit(db,'REMOVE_RANK', interaction.user.id, null, org_id, {rank_key});
+    await safeEdit(interaction, orgDetailView(db, org_id)); return;
+  }
+
+  // Add member
+  if (ns==='ui' && action==='modal' && args[0]==='add') {
+    const org_id = args[1];
+    if (!canManageThisOrg(ctx, org_id)) { await safeEdit(interaction,{content:'⛔ No permission for this org.',embeds:[],components:[]}); return; }
+    const input = interaction.fields.getTextInputValue('user').trim();
+    const uid = parseUserId(input);
+    if (!uid) { await safeEdit(interaction,{content:'❌ Invalid user/ID.',embeds:[],components:[]}); return; }
+
+    // Check cooldowns
+    const pk = getCooldown(db, uid, 'PK');
+    const ban = getCooldown(db, uid, 'BAN');
+    if (pk && !isExpired(pk.expires_at)) {
+      await safeEdit(interaction,{content:`⛔ User has PK cooldown until <t:${Math.floor(Date.parse(pk.expires_at)/1000)}:R>.`,embeds:[],components:[]}); return;
     }
-    const orgId = interaction.fields.getTextInputValue('org_id').trim();
-    const org = getOrgById(db, orgId);
-    if (!org) {
-      await interaction.editReply('Org ID inexistent.');
-      return;
+    if (ban && !isExpired(ban.expires_at)) {
+      await safeEdit(interaction,{content:`⛔ User is banned from factions until <t:${Math.floor(Date.parse(ban.expires_at)/1000)}:R>.`,embeds:[],components:[]}); return;
     }
-    deleteOrg(db, orgId);
-    addAudit(db, 'CONFIG_DELETE_ORG', interaction.user.id, null, orgId, { name: org.name });
-    await interaction.editReply({ content: `✅ Organizatia **${org.name}** a fost stearsa.`, ephemeral: true });
+
+    const gm = await interaction.guild.members.fetch(uid).catch(()=>null);
+    if (!gm) { await safeEdit(interaction,{content:'❌ User not in server.',embeds:[],components:[]}); return; }
+
+    // Resolve rank based on current roles (if any), else MEMBER
+    const rank_key = 'MEMBER';
+    await applyRolesForMembership(db, interaction, gm, org_id, rank_key);
+    setMembership(db, uid, org_id, rank_key);
+    addAudit(db,'ADD_MEMBER', interaction.user.id, uid, org_id, {rank_key});
+
+    // Audit log
+    await postAudit(db, interaction, `➕ Added <@${uid}> to **${getOrg(db,org_id).name}** (${rank_key})`);
+    await safeEdit(interaction, { content:`✅ Added <@${uid}> to **${getOrg(db,org_id).name}**.`, embeds:[], components:[ rowButtons(btn(`ui:orgpanel:open:${org_id}`,'Back')) ] });
     return;
   }
 
-  if (interaction.customId.startsWith('modal:cfg:addrank:')) {
-    await interaction.deferReply({ ephemeral: true });
-    if (!(ctx.isAdmin || ctx.isSupervisor)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    const orgId = interaction.customId.split(':').pop();
-    const org = getOrgById(db, orgId);
-    if (!org) {
-      await interaction.editReply('Org invalid.');
-      return;
-    }
-    const rankKey = interaction.fields.getTextInputValue('rank_key').trim().toUpperCase();
-    const levelRaw = interaction.fields.getTextInputValue('level').trim();
-    const level = Number(levelRaw);
-    if (!/^[A-Z0-9_]{2,24}$/.test(rankKey)) {
-      await interaction.editReply('Rank key invalid. Exemplu: LEADER, COLEADER, MEMBER, CHIEF, HR, DIRECTOR, DEPUTY');
-      return;
-    }
-    if (!Number.isInteger(level) || level < 0 || level > 100) {
-      await interaction.editReply('Level invalid. Foloseste un numar intreg 0-100 (mai mare = mai sus).');
-      return;
-    }
-    const roleRaw = (interaction.fields.getTextInputValue('role_id') || '').trim();
-    const roleMatch = roleRaw.match(/[0-9]{17,20}/);
-    if (!roleMatch) {
-      await interaction.editReply('Role ID invalid. Foloseste Copy ID din Discord (trebuie pus obligatoriu).');
-      return;
-    }
-    upsertOrgRank(db, { org_id: orgId, rank_key: rankKey, role_id: roleMatch[0], level });
-    addAudit(db, 'CONFIG_UPSERT_RANK', interaction.user.id, null, orgId, { org_id: orgId, rank_key: rankKey, level, role_id: roleMatch[0] });
-    await interaction.editReply({ content: '✅ Rank mapping salvat.', ephemeral: true });
+  // Remove member (no PK)
+  if (ns==='ui' && action==='modal' && args[0]==='remove') {
+    const org_id = args[1];
+    if (!canManageThisOrg(ctx, org_id)) { await safeEdit(interaction,{content:'⛔ No permission for this org.',embeds:[],components:[]}); return; }
+    const uid = parseUserId(interaction.fields.getTextInputValue('user').trim());
+    if (!uid) { await safeEdit(interaction,{content:'❌ Invalid user/ID.',embeds:[],components:[]}); return; }
+    const gm = await interaction.guild.members.fetch(uid).catch(()=>null);
+    if (gm) await removeOrgRoles(db, gm, org_id);
+    clearMembership(db, uid);
+    addAudit(db,'REMOVE_MEMBER', interaction.user.id, uid, org_id, {pk:false});
+    await postAudit(db, interaction, `➖ Removed <@${uid}> from **${getOrg(db,org_id).name}** (no PK)`);
+    await safeEdit(interaction, { content:`✅ Removed <@${uid}> (no PK).`, embeds:[], components:[ rowButtons(btn(`ui:orgpanel:open:${org_id}`,'Back')) ] });
     return;
   }
 
-  if (interaction.customId.startsWith('modal:add:')) {
-    await interaction.deferReply({ ephemeral: true });
-    const orgId = interaction.customId.split(':').pop();
-    const org = getOrgById(db, orgId);
-    const target = parseUserId(interaction.fields.getTextInputValue('user'));
-    if (!target) {
-      await interaction.editReply('User invalid. Foloseste mention sau ID.');
-      return;
-    }
-    if (!canManageMembers(ctx, org)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    try {
-      await addMemberToOrg({ db, guild: interaction.guild, actor: interaction.user, targetUserId: target, org });
-      await interaction.editReply(`✅ Added <@${target}> in **${org.name}**.`);
-    } catch (e) {
-      await interaction.editReply(`❌ ${e.message}`);
-    }
+  // PK remove member -> 3 days
+  if (ns==='ui' && action==='modal' && args[0]==='pkremove') {
+    const org_id = args[1];
+    if (!canManageThisOrg(ctx, org_id)) { await safeEdit(interaction,{content:'⛔ No permission for this org.',embeds:[],components:[]}); return; }
+    const uid = parseUserId(interaction.fields.getTextInputValue('user').trim());
+    if (!uid) { await safeEdit(interaction,{content:'❌ Invalid user/ID.',embeds:[],components:[]}); return; }
+    const gm = await interaction.guild.members.fetch(uid).catch(()=>null);
+    if (gm) await removeOrgRoles(db, gm, org_id);
+    clearMembership(db, uid);
+    setCooldown(db, uid, 'PK', addDaysIso(3), null);
+    addAudit(db,'REMOVE_MEMBER', interaction.user.id, uid, org_id, {pk:true, days:3});
+    await postAudit(db, interaction, `💀 PK Removed <@${uid}> from **${getOrg(db,org_id).name}** (3 zile)`);
+    await safeEdit(interaction, { content:`✅ PK Removed <@${uid}> (3 zile).`, embeds:[], components:[ rowButtons(btn(`ui:orgpanel:open:${org_id}`,'Back')) ] });
     return;
   }
 
-  if (interaction.customId.startsWith('modal:rem:')) {
-    await interaction.deferReply({ ephemeral: true });
-    const parts = interaction.customId.split(':');
-    const orgId = parts[2];
-    const pk = parts[3] === '1';
-    const org = getOrgById(db, orgId);
-    const target = parseUserId(interaction.fields.getTextInputValue('user'));
-    if (!target) {
-      await interaction.editReply('User invalid. Foloseste mention sau ID.');
-      return;
+  // Search
+  if (ns==='ui' && action==='modal' && args[0]==='search') {
+    const org_id = args[1];
+    const uid = parseUserId(interaction.fields.getTextInputValue('user').trim());
+    if (!uid) { await safeEdit(interaction,{content:'❌ Invalid user/ID.',embeds:[],components:[]}); return; }
+    const mem = getMembership(db, uid);
+    const pk = getCooldown(db, uid, 'PK');
+    const ban = getCooldown(db, uid, 'BAN');
+    const e = baseEmbed('🔎 Player Status', COLORS.GLOBAL);
+    const isAdminView = ctx.owner || ctx.isAdmin || ctx.isSupervisor;
+    if (mem) {
+      const org = getOrg(db, mem.org_id);
+      e.addFields({ name:'Status', value:`In org: **${isAdminView?org.name:'(hidden)'}** • Rank: **${mem.rank_key}**`, inline:false });
+    } else {
+      e.addFields({ name:'Status', value:'FREE (no org)', inline:false });
     }
-    if (!canManageMembers(ctx, org)) {
-      await interaction.editReply('Nu ai acces.');
-      return;
-    }
-    try {
-      await removeMemberFromOrg({ db, guild: interaction.guild, actor: interaction.user, targetUserId: target, org, withPk: pk });
-      await interaction.editReply(`✅ Removed <@${target}> din **${org.name}**${pk ? ' (PK cooldown)' : ''}.`);
-    } catch (e) {
-      await interaction.editReply(`❌ ${e.message}`);
-    }
+    if (pk) e.addFields({ name:'PK Cooldown', value:`Until <t:${Math.floor(Date.parse(pk.expires_at)/1000)}:R>`, inline:true });
+    if (ban) e.addFields({ name:'BAN', value:`Until <t:${Math.floor(Date.parse(ban.expires_at)/1000)}:R>`, inline:true });
+    await safeEdit(interaction, { embeds:[e], components:[ rowButtons(btn(`ui:orgpanel:open:${org_id}`,'Back')) ] });
     return;
   }
 
-  if (interaction.customId.startsWith('modal:search:')) {
-    await interaction.deferReply({ ephemeral: true });
-    const orgId = interaction.customId.split(':').pop();
-    const org = getOrgById(db, orgId);
-    const target = parseUserId(interaction.fields.getTextInputValue('user'));
-    if (!target) {
-      await interaction.editReply('User invalid.');
-      return;
-    }
-    const view = buildSearchResultEmbed({ db, ctx, org, targetUserId: target });
-    await interaction.editReply(view);
-    return;
-  }
+  // Add warn
+  if (ns==='ui' && action==='modal' && args[0]==='addwarn') {
+    const org_id = args[1];
+    const can = ctx.owner || ctx.isSupervisor || ctx.canWarnManage;
+    if (!can) { await safeEdit(interaction,{content:'🔒 Supervisor/Owner only.',embeds:[],components:[]}); return; }
+    const reason = interaction.fields.getTextInputValue('reason').trim();
+    const right_flag = interaction.fields.getTextInputValue('right').trim().toUpperCase() === 'DA' ? 'DA' : 'NU';
+    const sanction = interaction.fields.getTextInputValue('sanction').trim() || '1/3 Mafia Warn';
+    const exp = interaction.fields.getTextInputValue('expire90').trim().toUpperCase() === 'DA'
+      ? addDaysIso(90) : null;
 
-  if (interaction.customId === 'modal:falert') {
-    await interaction.deferReply({ ephemeral: true });
-    const locatie = interaction.fields.getTextInputValue('locatie');
-    const detalii = interaction.fields.getTextInputValue('detalii') || '';
-    if (!canFalert(ctx)) {
-      await interaction.editReply('Nu ai acces la Falert.');
-      return;
-    }
-    const res = await sendFalert({ client, db, interaction, actor: interaction.user, locatie, detalii, ctx });
-    await interaction.editReply(res);
-  }
-}
-
-function orgPickerPanel({ db, ctx, type }) {
-  const orgs = listOrgs(db, type);
-  const embed = new EmbedBuilder()
-    .setColor(type === 'MAFIA' ? COLORS.MAFIA : COLORS.LSPD)
-    .setTitle(type === 'MAFIA' ? '🕶️ MAFIA — Select Org' : '🚓 LEGAL — Select Org')
-    .setDescription('Alege organizatia pe care vrei sa o administrezi.');
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId(`fmenu:pickorg:${type}`)
-    .setPlaceholder('Alege organizatia...')
-    .addOptions(orgs.slice(0, 25).map(o => ({ label: o.name, value: o.org_id })));
-
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select), new ActionRowBuilder().addComponents(back)] };
-}
-
-function orgPanel({ db, ctx, org }) {
-  // If admin: create a temporary ctx scoped to org for rendering
-  const scopedCtx = (ctx.isAdmin || ctx.isSupervisor) ? { ...ctx, org, rankKey: org.type === 'MAFIA' ? 'LEADER' : 'CHIEF' } : ctx;
-  return fmenuRootPanel({ ctx: scopedCtx });
-}
-
-function orgActionsPanel({ db, ctx, org }) {
-  const embed = new EmbedBuilder()
-    .setColor(orgColor(org))
-    .setTitle(`⚙️ Actions — ${org.name}`)
-    .setDescription('Alege o actiune.');
-
-  const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`org:btn:add:${org.org_id}`).setLabel('➕ Add Member').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId(`org:btn:rem:${org.org_id}`).setLabel('➖ Remove').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId(`org:btn:pk:${org.org_id}`).setLabel('💀 Remove (PK)').setStyle(ButtonStyle.Danger)
-  );
-  const back = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary)
-  );
-  return { embeds: [embed], components: [row1, back] };
-}
-
-function rosterPanel({ db, ctx, org, page = 0 }) {
-  const perPage = 15;
-  const all = listMembershipsByOrg(db, org.org_id);
-  const total = all.length;
-  const pages = Math.max(1, Math.ceil(total / perPage));
-  const p = Math.max(0, Math.min(page, pages - 1));
-  const slice = all.slice(p * perPage, p * perPage + perPage);
-
-  const embed = new EmbedBuilder()
-    .setColor(orgColor(org))
-    .setTitle(`📋 Roster — ${org.name}`)
-    .setDescription(`Total: **${total}** • Page **${p + 1}/${pages}**`);
-
-  const lines = slice.map((m, i) => `${p * perPage + i + 1}) <@${m.user_id}> — **${m.rank_key}**`);
-  embed.addFields({ name: 'Members', value: lines.length ? lines.join('\n') : '—', inline: false });
-
-  const prev = new ButtonBuilder().setCustomId(`org:roster:${org.org_id}:${Math.max(0, p - 1)}`).setLabel('⬅️ Prev').setStyle(ButtonStyle.Secondary).setDisabled(p === 0);
-  const next = new ButtonBuilder().setCustomId(`org:roster:${org.org_id}:${Math.min(pages - 1, p + 1)}`).setLabel('➡️ Next').setStyle(ButtonStyle.Secondary).setDisabled(p >= pages - 1);
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(prev, next, back)] };
-}
-
-function cooldownsPanel({ db, ctx, org, page = 0 }) {
-  const perPage = 15;
-  const all = listCooldownsByOrg(db, org.org_id);
-  const total = all.length;
-  const pages = Math.max(1, Math.ceil(total / perPage));
-  const p = Math.max(0, Math.min(page, pages - 1));
-  const slice = all.slice(p * perPage, p * perPage + perPage);
-
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.COOLDOWN)
-    .setTitle(`⏳ Cooldowns — ${org.name}`)
-    .setDescription(`Total: **${total}** • Page **${p + 1}/${pages}**`);
-
-  const lines = slice.map((c, i) => `${p * perPage + i + 1}) <@${c.user_id}> — **${c.type}** • expires: ${c.expires_at || '—'}`);
-  embed.addFields({ name: 'Cooldowns', value: lines.length ? lines.join('\n') : '—', inline: false });
-
-  const prev = new ButtonBuilder().setCustomId(`org:cooldowns:${org.org_id}:${Math.max(0, p - 1)}`).setLabel('⬅️ Prev').setStyle(ButtonStyle.Secondary).setDisabled(p === 0);
-  const next = new ButtonBuilder().setCustomId(`org:cooldowns:${org.org_id}:${Math.min(pages - 1, p + 1)}`).setLabel('➡️ Next').setStyle(ButtonStyle.Secondary).setDisabled(p >= pages - 1);
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(prev, next, back)] };
-}
-
-function globalOverviewPanel({ db, ctx }) {
-  const orgCounts = countOrgsByType(db);
-  const memberCounts = countMembersByOrgType(db);
-  const stats = { pk: countByCooldown(db, 'PK'), ban: countByCooldown(db, 'BAN'), lockdowns: countLockdowns(db) };
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('🌍 Global Overview')
-    .addFields(
-      { name: 'Orgs', value: `MAFIA: **${orgCounts.MAFIA}**\nLEGAL: **${orgCounts.LEGAL}**\nTOTAL: **${orgCounts.TOTAL}**`, inline: true },
-      { name: 'Members', value: `MAFIA: **${memberCounts.MAFIA}**\nLEGAL: **${memberCounts.LEGAL}**\nTOTAL: **${memberCounts.TOTAL}**`, inline: true },
-      { name: 'Cooldown PK', value: String(stats.pk), inline: true },
-      { name: 'Ban Orgs', value: String(stats.ban), inline: true },
-      { name: 'Lockdowns', value: String(stats.lockdowns), inline: true }
-    );
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(back)] };
-}
-
-function configPanel({ db, ctx }) {
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('⚙️ Config')
-    .setDescription('Seteaza canale, roluri si organizatii direct din Discord. (Ephemeral)')
-    .addFields(
-      { name: 'Audit Channel', value: fmtId(getSetting(db, 'AUDIT_CHANNEL_ID', '')), inline: true },
-      { name: 'Alert Channel', value: fmtId(getSetting(db, 'ALERT_CHANNEL_ID', '')), inline: true },
-      { name: 'Warn Channel', value: fmtId(getSetting(db, 'WARN_CHANNEL_ID', '')), inline: true },
-      { name: 'Admin Role', value: fmtId(getSetting(db, 'ROLE_ADMIN_ID', '')), inline: true },
-      { name: 'Supervisor Role', value: fmtId(getSetting(db, 'ROLE_SUPERVISOR_ID', '')), inline: true },
-      { name: 'PK Role', value: fmtId(getSetting(db, 'ROLE_PK_ID', '')), inline: true },
-      { name: 'Ban Role', value: fmtId(getSetting(db, 'ROLE_BAN_ID', '')), inline: true }
-    );
-
-  const select = new StringSelectMenuBuilder()
-    .setCustomId('fmenu:select:config')
-    .setPlaceholder('Alege o sectiune...')
-    .addOptions(
-      { label: 'Channels', value: 'cfg:channels', description: 'Seteaza canalele pentru audit/alerts/warns' },
-      { label: 'Access Roles', value: 'cfg:roles', description: 'Seteaza rolurile pentru Admin/Supervisor/PK/Ban' },
-      { label: 'Organizations', value: 'cfg:orgs', description: 'Creeaza/sterge orgs + rank mapping' },
-      { label: 'Rate Limits', value: 'cfg:ratelimits', description: 'Limite actiuni (in lucru)' }
-    );
-
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(select), new ActionRowBuilder().addComponents(back)] };
-}
-
-function configChannelsPanel({ db }) {
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('⚙️ Config — Channels')
-    .setDescription('Paste ID-urile canalelor (Copy ID). Metoda asta e 100% stabila si nu loveste limitele Discord UI.')
-    .addFields(
-      { name: 'AUDIT_CHANNEL_ID', value: fmtChannel(getSetting(db, 'AUDIT_CHANNEL_ID', '')), inline: false },
-      { name: 'ALERT_CHANNEL_ID', value: fmtChannel(getSetting(db, 'ALERT_CHANNEL_ID', '')), inline: false },
-      { name: 'WARN_CHANNEL_ID', value: fmtChannel(getSetting(db, 'WARN_CHANNEL_ID', '')), inline: false },
-      { name: 'ERROR_CHANNEL_ID', value: fmtChannel(getSetting(db, 'ERROR_CHANNEL_ID', '')), inline: false }
-    );
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('cfg:set:channel:audit').setLabel('✏️ Audit').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:channel:alert').setLabel('✏️ Alert').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:channel:warn').setLabel('✏️ Warn').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:channel:error').setLabel('✏️ Error').setStyle(ButtonStyle.Secondary)
-  );
-  const back = new ButtonBuilder().setCustomId('global:config:back').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [row, new ActionRowBuilder().addComponents(back)] };
-}
-
-function configRolesPanel({ db }) {
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('⚙️ Config — Access Roles')
-    .setDescription('Paste ID-urile rolurilor (Copy ID). Metoda asta e stabila si usor de folosit.')
-    .addFields(
-      { name: 'ROLE_ADMIN_ID', value: fmtRole(getSetting(db, 'ROLE_ADMIN_ID', '')), inline: false },
-      { name: 'ROLE_SUPERVISOR_ID', value: fmtRole(getSetting(db, 'ROLE_SUPERVISOR_ID', '')), inline: false },
-      { name: 'ROLE_WARN_MANAGER_ID', value: fmtRole(getSetting(db, 'ROLE_WARN_MANAGER_ID', '')), inline: false },
-      { name: 'ROLE_PK_ID', value: fmtRole(getSetting(db, 'ROLE_PK_ID', '')), inline: false },
-      { name: 'ROLE_BAN_ID', value: fmtRole(getSetting(db, 'ROLE_BAN_ID', '')), inline: false }
-    );
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('cfg:set:role:admin').setLabel('✏️ Admin').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:role:supervisor').setLabel('✏️ Supervisor').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:role:warn').setLabel('✏️ Warn').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:role:pk').setLabel('✏️ PK').setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder().setCustomId('cfg:set:role:ban').setLabel('✏️ Ban').setStyle(ButtonStyle.Secondary)
-  );
-
-  const back = new ButtonBuilder().setCustomId('global:config:back').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [row, new ActionRowBuilder().addComponents(back)] };
-}
-
-function configOrgsPanel({ db }) {
-  const orgs = listOrgs(db);
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('⚙️ Config — Organizations')
-    .setDescription('Creeaza/sterge organizatii si configureaza rank mapping (roluri).')
-    .addFields({ name: 'Total orgs', value: String(orgs.length), inline: true });
-
-  const options = orgs.slice(0, 25).map(o => ({ label: `${o.name} (${o.type})`, value: o.org_id }));
-  const select = new StringSelectMenuBuilder().setCustomId('cfg:org:pick').setPlaceholder('Alege organizatia pentru edit...');
-  if (options.length) select.addOptions(options);
-
-  const row1 = new ActionRowBuilder();
-  if (options.length) row1.addComponents(select);
-
-  const btns = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('cfg:org:create').setLabel('➕ Create Org').setStyle(ButtonStyle.Success),
-    new ButtonBuilder().setCustomId('cfg:org:delete').setLabel('🗑️ Delete Org').setStyle(ButtonStyle.Danger)
-  );
-  const back = new ButtonBuilder().setCustomId('global:config:back').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  const comps = [];
-  if (options.length) comps.push(row1);
-  comps.push(btns);
-  comps.push(new ActionRowBuilder().addComponents(back));
-  return { embeds: [embed], components: comps };
-}
-
-function configOrgDetailPanel({ db, org }) {
-  const ranks = org ? db.prepare('SELECT rank_key, role_id, level FROM org_ranks WHERE org_id=? ORDER BY level DESC').all(org.org_id) : [];
-  const embed = new EmbedBuilder()
-    .setColor(org ? orgColor(org) : COLORS.GLOBAL)
-    .setTitle(`🏷️ Org Details — ${org?.name || 'Unknown'}`)
-    .setDescription(`Type: **${org?.type || '—'}**\nBase role: ${fmtRole(org?.base_role_id || '')}`)
-    .addFields({ name: 'Ranks', value: ranks.length ? ranks.map(r => `• **${r.rank_key}** (lvl ${r.level}) → ${fmtRole(r.role_id)}`).join('\n') : '—', inline: false });
-
-  const addRankBtn = new ButtonBuilder().setCustomId(`cfg:org:addrank:${org.org_id}`).setLabel('➕ Add/Update Rank').setStyle(ButtonStyle.Primary);
-  const back = new ButtonBuilder().setCustomId('cfg:org:back:list').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(addRankBtn), new ActionRowBuilder().addComponents(back)] };
-}
-
-async function diagnosticsPanel({ db, ctx, guild }) {
-  const me = guild.members.me;
-  const perms = me?.permissions;
-  const manageRoles = perms?.has('ManageRoles') || false;
-  const manageGuild = perms?.has('ManageGuild') || false;
-  const viewChannels = perms?.has('ViewChannel') || false;
-
-  const roleAdmin = getSetting(db, 'ROLE_ADMIN_ID', '');
-  const roleSup = getSetting(db, 'ROLE_SUPERVISOR_ID', '');
-  const pkRole = getSetting(db, 'ROLE_PK_ID', '');
-  const banRole = getSetting(db, 'ROLE_BAN_ID', '');
-
-  const topPos = me?.roles?.highest?.position ?? 0;
-  const rolePos = (rid) => (rid && guild.roles.cache.get(rid) ? guild.roles.cache.get(rid).position : null);
-
-  const embed = new EmbedBuilder()
-    .setColor(COLORS.GLOBAL)
-    .setTitle('🩺 Diagnostics')
-    .setDescription('Check rapid: permisiuni, config, ierarhie roluri.')
-    .addFields(
-      { name: 'Bot perms', value: `ViewChannel: ${viewChannels ? '✅' : '❌'}\nManageRoles: ${manageRoles ? '✅' : '❌'}\nManageGuild: ${manageGuild ? '✅' : '❌'}`, inline: true },
-      { name: 'Channels set', value: `Audit: ${getSetting(db,'AUDIT_CHANNEL_ID','') ? '✅' : '❌'}\nAlert: ${getSetting(db,'ALERT_CHANNEL_ID','') ? '✅' : '❌'}\nWarn: ${getSetting(db,'WARN_CHANNEL_ID','') ? '✅' : '❌'}`, inline: true },
-      { name: 'Access roles set', value: `Admin: ${roleAdmin ? '✅' : '❌'}\nSupervisor: ${roleSup ? '✅' : '❌'}`, inline: true },
-      { name: 'Cooldown roles set', value: `PK: ${pkRole ? '✅' : '❌'}\nBAN: ${banRole ? '✅' : '❌'}`, inline: true },
-      { name: 'Role hierarchy', value: `Bot top role position: **${topPos}**\nAdmin role position: **${rolePos(roleAdmin) ?? '—'}**\nPK role position: **${rolePos(pkRole) ?? '—'}**\nBAN role position: **${rolePos(banRole) ?? '—'}**\n\n✅ Bot must be ABOVE roles it edits.`, inline: false }
-    );
-  const back = new ButtonBuilder().setCustomId('fmenu:back:root').setLabel('Back').setStyle(ButtonStyle.Secondary);
-  return { embeds: [embed], components: [new ActionRowBuilder().addComponents(back)] };
-}
-
-function createOrgModal() {
-  return new ModalBuilder()
-    .setCustomId('modal:cfg:create_org')
-    .setTitle('➕ Create Organization')
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('org_id').setLabel('Org ID (slug, ex: ballas)').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('name').setLabel('Name (ex: Ballas)').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('type').setLabel('Type: MAFIA or LEGAL').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('base_role_id').setLabel('Base role ID (optional)').setStyle(TextInputStyle.Short).setRequired(false)
-      )
-    );
-}
-
-function setIdModal(customId, title, label, placeholder) {
-  return new ModalBuilder()
-    .setCustomId(customId)
-    .setTitle(title)
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('id')
-          .setLabel(label)
-          .setPlaceholder(placeholder)
-          .setStyle(TextInputStyle.Short)
-          .setRequired(true)
-      )
-    );
-}
-
-function deleteOrgModal() {
-  return new ModalBuilder()
-    .setCustomId('modal:cfg:delete_org')
-    .setTitle('🗑️ Delete Organization')
-    .addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('org_id').setLabel('Org ID to delete').setStyle(TextInputStyle.Short).setRequired(true)
-    ));
-}
-
-function addRankModal(orgId) {
-  return new ModalBuilder()
-    .setCustomId(`modal:cfg:addrank:${orgId}`)
-    .setTitle('➕ Add/Update Rank Mapping')
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('rank_key').setLabel('Rank key (ex: LEADER, COLEADER, MEMBER)').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('level').setLabel('Level (0-100, mai mare = mai sus)').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('role_id').setLabel('Role ID (optional - Copy ID)').setStyle(TextInputStyle.Short).setRequired(false)
-      )
-    );
-}
-
-function addMemberModal(orgId) {
-  return new ModalBuilder()
-    .setCustomId(`modal:add:${orgId}`)
-    .setTitle('➕ Add Member')
-    .addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('user').setLabel('User (mention or ID)').setStyle(TextInputStyle.Short).setRequired(true)
-    ));
-}
-
-function removeMemberModal(orgId, pk) {
-  return new ModalBuilder()
-    .setCustomId(`modal:rem:${orgId}:${pk ? '1' : '0'}`)
-    .setTitle(pk ? '💀 Remove (PK)' : '➖ Remove')
-    .addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('user').setLabel('User (mention or ID)').setStyle(TextInputStyle.Short).setRequired(true)
-    ));
-}
-
-function searchModal(orgId) {
-  return new ModalBuilder()
-    .setCustomId(`modal:search:${orgId}`)
-    .setTitle('🔎 Search Player')
-    .addComponents(new ActionRowBuilder().addComponents(
-      new TextInputBuilder().setCustomId('user').setLabel('User (mention or ID)').setStyle(TextInputStyle.Short).setRequired(true)
-    ));
-}
-
-function falertModal() {
-  return new ModalBuilder()
-    .setCustomId('modal:falert')
-    .setTitle('🚨 Falert')
-    .addComponents(
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('locatie').setLabel('Locatie').setStyle(TextInputStyle.Short).setRequired(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new TextInputBuilder().setCustomId('detalii').setLabel('Detalii (optional)').setStyle(TextInputStyle.Paragraph).setRequired(false)
-      )
-    );
-}
-
-function parseUserId(input) {
-  if (!input) return null;
-  const m = input.match(/\d{17,20}/);
-  return m ? m[0] : null;
-}
-
-function fmtId(id) {
-  return id ? `\`${id}\`` : '—';
-}
-
-function fmtRole(roleId) {
-  return roleId ? `<@&${roleId}> (\`${roleId}\`)` : '—';
-}
-
-function fmtChannel(channelId) {
-  return channelId ? `<#${channelId}> (\`${channelId}\`)` : '—';
-}
-
-function buildSearchResultEmbed({ db, ctx, org, targetUserId }) {
-  const cd = getCooldown(db, targetUserId);
-  const mem = getMembership(db, targetUserId);
-  const last = getLastOrg(db, targetUserId);
-
-  const isPriv = ctx.isAdmin || ctx.isSupervisor;
-
-  const embed = new EmbedBuilder()
-    .setColor(isPriv ? COLORS.GLOBAL : orgColor(org))
-    .setTitle(`🔎 Search — <@${targetUserId}>`);
-
-  let status = 'FREE';
-  if (mem) status = 'IN_ORG';
-  if (cd) status = cd.type === 'PK' ? 'COOLDOWN_PK' : 'COOLDOWN_BAN';
-
-  embed.addFields(
-    { name: 'Status', value: status, inline: true },
-    { name: 'Expires', value: cd?.expires_at || '—', inline: true },
-    { name: 'Last time in org', value: last?.last_in_org_at || '—', inline: false }
-  );
-
-  if (isPriv) {
+    const warnChId = getSetting(db,'WARN_CHANNEL_ID','');
+    if (!warnChId) { await safeEdit(interaction,{content:'❌ WARN_CHANNEL_ID not set.',embeds:[],components:[]}); return; }
+    const warn_id = `MW-${new Date().getFullYear()}-${nanoid(6).toUpperCase()}`;
+    const org = getOrg(db, org_id);
+    const embed = baseEmbed('⚠️ Mafia Warn', COLORS.WARN);
     embed.addFields(
-      { name: 'Org', value: mem?.org_id || '—', inline: true },
-      { name: 'Rank', value: mem?.rank_key || '—', inline: true }
+      { name:'Organizatie', value: mentionRole(org.base_role_id) + ` • **${org.name}**`, inline:false },
+      { name:'Motiv', value: reason, inline:false },
+      { name:'DREPT', value: right_flag, inline:true },
+      { name:'SANCTIUNEA OFERITA', value: sanction, inline:true },
+      { name:'EXPIRA', value: exp ? `<t:${Math.floor(Date.parse(exp)/1000)}:R>` : 'NU', inline:true },
+      { name:'Warn ID', value: `\`${warn_id}\``, inline:false },
     );
-  } else {
-    embed.setFooter({ text: 'Limited view' });
+
+    const ch = await interaction.guild.channels.fetch(warnChId).catch(()=>null);
+    const msg = ch ? await ch.send({ embeds:[embed] }).catch(()=>null) : null;
+
+    createWarn(db, { warn_id, org_id, reason, right_flag, sanction, expires_at: exp, message_id: msg?.id ?? null, channel_id: warnChId, created_by: interaction.user.id });
+    addAudit(db,'ADD_WARN', interaction.user.id, null, org_id, {warn_id});
+
+    await safeEdit(interaction, { content:`✅ Warn created: \`${warn_id}\``, components:[ rowButtons(btn(`ui:warns:open:${org_id}`,'Back')) ], embeds:[] });
+    return;
   }
 
-  return { embeds: [embed], ephemeral: true };
+  // Remove warn
+  if (ns==='ui' && action==='modal' && args[0]==='removewarn') {
+    const org_id = args[1];
+    const can = ctx.owner || ctx.isSupervisor || ctx.canWarnManage;
+    if (!can) { await safeEdit(interaction,{content:'🔒 Supervisor/Owner only.',embeds:[],components:[]}); return; }
+    const warn_id = interaction.fields.getTextInputValue('warn_id').trim();
+    const w = getWarn(db, warn_id);
+    if (!w) { await safeEdit(interaction,{content:'❌ Warn not found.',embeds:[],components:[]}); return; }
+    deactivateWarn(db, warn_id);
+    addAudit(db,'REMOVE_WARN', interaction.user.id, null, w.org_id, {warn_id});
+    await safeEdit(interaction, { content:`✅ Warn removed: \`${warn_id}\``, components:[ rowButtons(btn(`ui:warns:open:${org_id}`,'Back')) ], embeds:[] });
+    return;
+  }
+
+  await safeEdit(interaction, { content:'Unhandled modal.', components:[], embeds:[] });
 }
 
-async function computeQuickStats(db) {
-  return { pk: countByCooldown(db, 'PK'), ban: countByCooldown(db, 'BAN'), lockdowns: countLockdowns(db) };
-}
-
-function countByCooldown(db, type) {
-  return db.prepare('SELECT COUNT(1) as c FROM cooldowns WHERE type=?').get(type).c;
-}
-
-function countLockdowns(db) {
-  return db.prepare('SELECT COUNT(1) as c FROM lockdowns').get().c;
+async function postAudit(db, interaction, text){
+  const auditId = getSetting(db,'AUDIT_CHANNEL_ID','');
+  if (!auditId) return;
+  const ch = await interaction.guild.channels.fetch(auditId).catch(()=>null);
+  if (!ch) return;
+  await ch.send({ content: `${text}\nBy: <@${interaction.user.id}> • At: <t:${Math.floor(Date.now()/1000)}:f>` }).catch(()=>{});
 }

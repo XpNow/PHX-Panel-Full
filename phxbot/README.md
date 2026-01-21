@@ -1,66 +1,23 @@
-# phxbot (Phoenix Faction + Legal Panel)
+# phxbot (v0.2)
 
-Bot Discord cu **dashboard interactiv in Discord (embeds + buttons + modals)** pentru:
-- **MAFIA** (Leader/CoLeader scoped) + **Admin/Supervisor** global
-- **LEGAL** (LSPD/SMURD managers scoped)
-- PK cooldown (3 zile) + anti-evade (leave/rejoin => reset)
-- Ban from orgs (1-6 luni, fara reset)
-- Audit logging, diagnostics, reconcile, lockdown, rate limits
+Discord bot for managing Mafia/Legal organizations with cooldowns, warnings, audit logs, and Discord-native dashboard UI.
 
-## 1) Cerinte
-- Node.js 20+ (recomand)
-- Un bot Discord creat in Developer Portal (Application + Bot)
-- Bot invitat pe server cu permisiuni:
-  - Manage Roles
-  - Read Message History
-  - Send Messages
-  - View Audit Log (optional)
+## Run locally
+1. Create `.env` from `.env.example`
+2. `npm install`
+3. `npm run initdb`
+4. `npm run register`
+5. `npm start`
 
-## 2) Setup (PC)
-1. Deschide folderul proiectului.
-2. Copiaza `.env.example` in `.env` si completeaza valorile:
-   - DISCORD_TOKEN
-   - DISCORD_CLIENT_ID
-   - DISCORD_GUILD_ID (serverul tau de test)
-3. Instaleaza dependintele:
-   ```bash
-   npm install
-   ```
-4. Initializeaza baza de date + setari default:
-   ```bash
-   npm run initdb
-   ```
-5. Inregistreaza slash commands in guild (test):
-   ```bash
-   npm run register
-   ```
-6. Porneste botul:
-   ```bash
-   npm start
-   ```
+## Render
+- Root Directory: `phxbot` (if repo has subfolder)
+- Build: `npm install && npm run initdb`
+- Start: `npm start`
+- Env:
+  - DISCORD_TOKEN
+  - DISCORD_CLIENT_ID
+  - DISCORD_GUILD_ID
+  - DB_PATH=/data/phxbot.sqlite
+- Add Persistent Disk mounted at `/data`
 
-## 3) Comenzi
-- `/fmenu` - dashboard interactiv (ephemeral)
-- `/falert` - alerta razie (global cooldown)
-
-## 4) Config (din dashboard)
-Configurarea se face din **/fmenu → Global → Config**.
-
-Bootstrap: **owner-ul serverului (guild owner)** are access la Config chiar daca nu ai setat inca rolurile.
-
-Setari cheie:
-- Channels: audit / alert / warn / error
-- Access roles: admin / supervisor / warn-manage / PK / ban
-- Organizations: create/delete + rank mapping (LEADER/COLEADER/MEMBER, CHIEF/HR/DIRECTOR/DEPUTY etc.)
-
-## 5) Fisiere importante
-- `src/index.js` - entrypoint
-- `src/db/*` - DB schema + access layer
-- `src/commands/*` - slash commands
-- `src/ui/*` - render embeds, buttons, modals
-
-## 6) Disclaimer
-Acesta este un starter functional (v0.1) cu structura corecta. Extinde in timp:
-- roster complet + paginare
-- warns management complet
-- full reconcile per org/global
+Config is done from `/fmenu -> Config`.
