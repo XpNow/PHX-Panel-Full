@@ -1,23 +1,27 @@
-# phxbot (v0.2)
+# phxbot (Patch 1 - usable)
 
-Discord bot for managing Mafia/Legal organizations with cooldowns, warnings, audit logs, and Discord-native dashboard UI.
+## Quick start (Windows)
 
-## Run locally
-1. Create `.env` from `.env.example`
-2. `npm install`
-3. `npm run initdb`
-4. `npm run register`
-5. `npm start`
+1. Install Node.js 20+
+2. In folder:
+```powershell
+npm install
+npm run initdb
+npm run register
+npm start
+```
 
-## Render
-- Root Directory: `phxbot` (if repo has subfolder)
-- Build: `npm install && npm run initdb`
-- Start: `npm start`
-- Env:
-  - DISCORD_TOKEN
-  - DISCORD_CLIENT_ID
-  - DISCORD_GUILD_ID
-  - DB_PATH=/data/phxbot.sqlite
-- Add Persistent Disk mounted at `/data`
+3. Create `.env` (copy `.env.example` -> `.env`) and fill:
+- DISCORD_TOKEN
+- DISCORD_CLIENT_ID
+- DISCORD_GUILD_ID
 
-Config is done from `/fmenu -> Config`.
+## Commands
+- `/famenu` = admin hub (Owner/Admin/Supervisor). Owner can set config.
+- `/fmenu` = organization menu (Leader/Co-Leader + org role).
+- `/falert` = raid alert (global cooldown 30 min).
+
+## Important
+Bot must have permissions:
+- Manage Roles (and be ABOVE org roles + PK/BAN roles)
+- Send Messages / Embed Links in configured channels
