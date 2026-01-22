@@ -242,7 +242,7 @@ async function fmenuHome(interaction, ctx) {
     description: "Deschide meniul organizației"
   }));
 
-  const emb = makeEmbed("Alege organizația", "Ai acces la mai multe organizații. Selectează una:");
+  const emb = makeEmbed("FMenu — Selectează organizația", "Ai acces la mai multe organizații. Alege una pentru a continua.");
   const menu = select("fmenu:pickorg", "Selectează organizația…", options);
   const row = new ActionRowBuilder().addComponents(menu);
   return sendEphemeral(interaction, emb.data.title, emb.data.description, [row]);
@@ -262,8 +262,8 @@ async function orgPanelView(interaction, ctx, orgId) {
 
   const counts = repo.listMembersByOrg(ctx.db, orgId).length;
   const emb = makeEmbed(
-    `📌 ${org.name} — ${humanKind(org.kind)}`,
-    `Membri înregistrați (DB): **${counts}**\n\nAlege o acțiune rapidă:`
+    `FMenu — ${org.name}`,
+    `Tip: **${humanKind(org.kind)}**\nMembri înregistrați (DB): **${counts}**\n\nAlege o acțiune:`
   );
 
   const buttons = [
@@ -307,7 +307,7 @@ function orgCreateModal() {
 }
 
 function configAccessRolesView(ctx) {
-  const emb = makeEmbed("🔐 Roluri de acces", "Owner only. Setează rolurile care controlează accesul botului.");
+  const emb = makeEmbed("Config — Roluri", "Owner only. Setează rolurile de acces.");
   const lines = [
     `Admin: ${ctx.settings.adminRole ? `<@&${ctx.settings.adminRole}>` : "(unset)"}`,
     `Supervisor: ${ctx.settings.supervisorRole ? `<@&${ctx.settings.supervisorRole}>` : "(unset)"}`,
@@ -327,7 +327,7 @@ function configAccessRolesView(ctx) {
 }
 
 function configChannelsView(ctx) {
-  const emb = makeEmbed("📣 Canale", "Owner only. Setează unde trimite botul loguri/alerte.");
+  const emb = makeEmbed("Config — Canale", "Owner only. Setează canalele botului.");
   const lines = [
     `Audit: ${ctx.settings.audit ? `<#${ctx.settings.audit}>` : "(unset)"}`,
     `Alert: ${ctx.settings.alert ? `<#${ctx.settings.alert}>` : "(unset)"}`,
@@ -347,7 +347,7 @@ function configChannelsView(ctx) {
 }
 
 function configRateLimitView(ctx) {
-  const emb = makeEmbed("⏱️ Rate limit", "Owner only. Limitează acțiunile pe minut (anti-abuz).");
+  const emb = makeEmbed("Config — Rate limit", "Owner only. Limitează acțiunile pe minut.");
   emb.setDescription(`${emb.data.description}\n\nAcum: **${ctx.settings.rateLimitPerMin}/min**`);
   const buttons = [
     btn("famenu:setratelimit", "Schimbă limită", ButtonStyle.Secondary),
@@ -361,7 +361,7 @@ async function famenuHome(interaction, ctx) {
     return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Owner/Admin/Supervisor pot folosi /famenu.");
   }
   const c = repo.counts(ctx.db);
-  const emb = makeEmbed("🛠️ Admin Hub", `Organizații: **${c.orgs}** | Membri DB: **${c.members}** | PK: **${c.pk}** | Ban: **${c.bans}**\n\nAlege ce vrei să gestionezi:`);
+  const emb = makeEmbed("FAMenu — Admin", `Organizații: **${c.orgs}** · Membri DB: **${c.members}** · PK: **${c.pk}** · Ban: **${c.bans}**\n\nAlege un modul:`);
   const buttons = [
     btn("famenu:orgs", "Organizații", ButtonStyle.Primary, "🏛️"),
     btn("famenu:config", "Config", ButtonStyle.Secondary, "⚙️"),
@@ -375,7 +375,7 @@ async function famenuHome(interaction, ctx) {
 
 async function famenuConfig(interaction, ctx) {
   if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul poate modifica configurările.");
-  const emb = makeEmbed("⚙️ Config", "Setează roluri, canale și rate limit.");
+  const emb = makeEmbed("Config — Sistem", "Setează roluri, canale și rate limit.");
   const buttons = [
     btn("famenu:config:roles", "Roluri de acces", ButtonStyle.Secondary, "🔐"),
     btn("famenu:config:channels", "Canale", ButtonStyle.Secondary, "📣"),
@@ -389,9 +389,9 @@ async function famenuOrgs(interaction, ctx) {
   if (!ctx.perms.staff) return sendEphemeral(interaction, "⛔ Acces refuzat", "Nu ai acces.");
   const orgs = repo.listOrgs(ctx.db);
   const desc = orgs.length
-    ? orgs.map(o => `• **${o.name}** (${humanKind(o.kind)}) — ID: \`${o.id}\``).join("\n")
+    ? orgs.map(o => `• **${o.name}** · ${humanKind(o.kind)} · ID: \`${o.id}\``).join("\n")
     : "Nu există organizații încă.";
-  const emb = makeEmbed("🏛️ Organizații", desc);
+  const emb = makeEmbed("Organizații", desc);
 
   const buttons = [
     requireCreateOrg(ctx) ? btn("famenu:createorg", "Create", ButtonStyle.Success, "➕") : null,
@@ -443,7 +443,7 @@ function warnRemoveModal() {
 }
 
 function warnsView(ctx) {
-  const emb = makeEmbed("⚠️ Warns", "Adaugă/șterge warn-uri (Supervisor/Owner).");
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
   const buttons = [
     btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
     btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
@@ -454,7 +454,7 @@ function warnsView(ctx) {
 }
 
 function cooldownsAdminView(ctx) {
-  const emb = makeEmbed("⏳ Cooldowns", "Gestionează cooldown-uri pentru orice player (Supervisor/Owner).");
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
   const buttons = [
     btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
     btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
@@ -507,45 +507,6 @@ function reconcileOrgModal() {
   ]);
 }
 
-async function stickyPanel(interaction, ctx, orgId) {
-  const org = repo.getOrg(ctx.db, orgId);
-  if (!org) return sendEphemeral(interaction, "Eroare", "Organizația nu există.");
-  const ch = interaction.channel;
-  if (!ch || !ch.isTextBased()) return sendEphemeral(interaction, "Eroare", "Canal invalid pentru sticky panel.");
-
-  const emb = makeEmbed(
-    `📌 ${org.name} — ${humanKind(org.kind)}`,
-    "Apasă butonul de mai jos pentru a deschide meniul organizației."
-  );
-  const openBtn = btn(`fmenu:open:${orgId}`, "Deschide meniu", ButtonStyle.Primary, "📂");
-  const row = new ActionRowBuilder().addComponents(openBtn);
-
-  const key = `sticky_panel_${orgId}`;
-  const stored = getGlobal(ctx.db, key);
-  let msg = null;
-  if (stored) {
-    const [channelId, messageId] = stored.split(":");
-    if (channelId && messageId) {
-      const oldCh = await ctx.guild.channels.fetch(channelId).catch(()=>null);
-      if (oldCh && oldCh.isTextBased()) {
-        msg = await oldCh.messages.fetch(messageId).catch(()=>null);
-      }
-    }
-  }
-  if (msg) {
-    await msg.edit({ embeds: [emb], components: [row] }).catch((err)=> {
-      console.error("[STICKY] edit failed:", err);
-    });
-    return sendEphemeral(interaction, "Sticky Panel", "Panelul a fost actualizat.");
-  }
-  const newMsg = await ch.send({ embeds: [emb], components: [row] }).catch((err)=> {
-    console.error("[STICKY] send failed:", err);
-    return null;
-  });
-  if (!newMsg) return sendEphemeral(interaction, "Eroare", "Nu pot trimite sticky panel în acest canal.");
-  setGlobal(ctx.db, key, `${ch.id}:${newMsg.id}`);
-  return sendEphemeral(interaction, "Sticky Panel", "Panelul a fost postat.");
-}
 async function handleFalert(interaction, ctx) {
   const loc = interaction.options.getString("locatie", true);
   const last = Number(getGlobal(ctx.db, "falert_last_ts") || "0");
@@ -805,7 +766,7 @@ async function rosterView(interaction, ctx, orgId) {
   const shown = lines.slice(0, 50);
   const extra = lines.length > 50 ? `\n... și încă ${lines.length - 50} membri` : "";
   const desc = shown.length ? `${shown.join("\n")}${extra}` : "Nu există membri în organizație.";
-  const emb = makeEmbed(`📋 Roster — ${org.name}`, desc);
+  const emb = makeEmbed(`Roster — ${org.name}`, desc);
   const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
@@ -813,7 +774,7 @@ async function rosterView(interaction, ctx, orgId) {
 async function cooldownsView(interaction, ctx, orgId) {
   const pk = repo.listCooldowns(ctx.db, "PK").filter(r => r.expires_at > now());
   const ban = repo.listCooldowns(ctx.db, "BAN").filter(r => r.expires_at > now());
-  const emb = makeEmbed("⏳ Cooldowns", `PK activi: **${pk.length}**\nBAN activi: **${ban.length}**`);
+  const emb = makeEmbed("Cooldowns", `PK activi: **${pk.length}**\nBAN activi: **${ban.length}**`);
   const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
@@ -856,7 +817,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
     }
   }
 
-  const emb = makeEmbed("🔎 Search", lines.join("\n"));
+  const emb = makeEmbed("Search", lines.join("\n"));
   const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
