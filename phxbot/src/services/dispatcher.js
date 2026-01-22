@@ -74,6 +74,9 @@ async function sendEphemeral(interaction, title, desc, components=[]) {
   const emb = makeEmbed(title, desc);
   const payload = { embeds: [emb], components: safeComponents(components), ephemeral: true };
   if (interaction.deferred || interaction.replied) return interaction.editReply(payload);
+  if (interaction.isButton?.() || interaction.isStringSelectMenu?.()) {
+    return interaction.update(payload);
+  }
   return interaction.reply(payload);
 }
 
@@ -139,8 +142,7 @@ function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, exp
     `Motiv: ${reason || "—"}`,
     `DREPT PLATA: ${dreptPlata ? "DA" : "NU"}`,
     `SANCTIUNEA OFERITA: ${sanctiune || "—"}`,
-    `EXPIRA IN 90 ZILE: ${expiresAt ? "DA" : "NU"}`,
-    `EXPIRĂ ÎN: ${expiresAt ? formatDaysLeft(expiresAt) : "—"}`,
+    `Expiră: ${expiresAt ? formatTs(expiresAt) : "—"}`,
     `TOTAL WARN: ${totalWarn}`
   ];
   const emb = makeEmbed("⚠️ WARN", lines.join("\n"));
@@ -693,7 +695,7 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
 
   const addedPk = await safeRoleAdd(targetMember, pkRole, `Apply PK for ${targetMember.id}`);
   if (!addedPk) return { ok:false, msg:"Nu pot aplica rolul PK (permisiuni lipsă)." };
-  await audit(ctx, "Remove (PK)", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | De: <@${byUserId}> | Expiră: ${formatTs(expiresAt)}`);
+  await audit(ctx, "Remove cu PK", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | Expiră: ${formatTs(expiresAt)} | De: <@${byUserId}>`);
   return { ok:true };
 }
 
@@ -707,7 +709,7 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId) {
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   repo.removeMembership(ctx.db, targetMember.id);
   repo.upsertLastOrgState(ctx.db, targetMember.id, orgId, now(), byUserId);
-  await audit(ctx, "Remove membru", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${byUserId}>`);
+  await audit(ctx, "Membru scos", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${byUserId}>`);
   return { ok:true };
 }
 
@@ -737,7 +739,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   const added = await safeRoleAdd(targetMember, org.member_role_id, `Add org role for ${targetMember.id}`);
   if (!added) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
   repo.upsertMembership(ctx.db, targetMember.id, orgId, role || "MEMBER");
-  await audit(ctx, "Add membru", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${ctx.uid}>`);
+  await audit(ctx, "Membru adăugat", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${ctx.uid}>`);
   return { ok:true };
 }
 
@@ -996,7 +998,7 @@ async function handleModal(interaction, ctx) {
     const msgRes = await sendWarnMessage(ctx, warnEmbed);
     if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
     repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
-    await audit(ctx, "Warn add", `Warn ID: \`${warnId}\` | Org: **${org.name}** | De: <@${ctx.uid}> | Expiră: ${formatTs(expiresAt)}`);
+    await audit(ctx, "Warn aplicat", `Organizație: **${org.name}** | Warn ID: \`${warnId}\` | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
     return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn \`${warnId}\` pentru **${org.name}** (expiră ${formatTs(expiresAt)}).`)] });
   }
 
@@ -1024,7 +1026,7 @@ async function handleModal(interaction, ctx) {
       }
     }
 
-    await audit(ctx, "Warn remove", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
+    await audit(ctx, "Warn șters", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
     return sendEphemeral(interaction, "Warn șters", `Warn \`${warnId}\` a fost marcat ca REMOVED.`);
   }
 
@@ -1047,7 +1049,7 @@ async function handleModal(interaction, ctx) {
         if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
       }
     }
-    await audit(ctx, "Cooldown add", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
+    await audit(ctx, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)}`);
   }
 
@@ -1065,7 +1067,7 @@ async function handleModal(interaction, ctx) {
         await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
       }
     }
-    await audit(ctx, "Cooldown remove", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
+    await audit(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
   }
 
@@ -1222,9 +1224,9 @@ async function handleComponent(interaction, ctx) {
       ? warns.map(w => {
         let payload = {};
         try { payload = JSON.parse(w.payload_json); } catch {}
-        const orgName = payload.org_name || `Org ${w.org_id || "-"}`;
+        const orgLabel = payload.org_role_id ? `<@&${payload.org_role_id}>` : (payload.org_name || `Org ${w.org_id || "-"}`);
         const exp = w.expires_at ? formatTs(w.expires_at) : "—";
-        return `• \`${w.warn_id}\` | **${orgName}** | Expiră: ${exp}`;
+        return `• \`${w.warn_id}\` | ${orgLabel} | Expiră: ${exp}`;
       }).join("\n")
       : "Nu există warn-uri active.";
     const emb = makeEmbed("⚠️ Warns active", desc);
