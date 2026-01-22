@@ -130,12 +130,6 @@ async function fetchMembersWithRetry(guild, label) {
   }
 }
 
-function formatDaysLeft(expiresAt) {
-  if (!expiresAt) return "—";
-  const diff = Math.max(0, expiresAt - now());
-  return `${Math.ceil(diff / (24 * 60 * 60 * 1000))} zile`;
-}
-
 function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, expiresAt, totalWarn, warnId }) {
   const lines = [
     `Organizație: ${orgRoleId ? `<@&${orgRoleId}>` : (orgName || "—")}`,
@@ -531,9 +525,14 @@ async function handleFalert(interaction, ctx) {
     return sendEphemeral(interaction, "Fără organizații ILLEGAL", "Nu există organizații ILLEGAL configurate pentru alertă.");
   }
 
+  const roleIds = [...new Set(orgs.map(org => org.member_role_id).filter(Boolean))];
+  if (!roleIds.length) {
+    return sendEphemeral(interaction, "Roluri lipsă", "Organizațiile ILLEGAL nu au roluri configurate pentru ping.");
+  }
+
   setGlobal(ctx.db, "falert_last_ts", String(now()));
   // ping roles: use member_role_id for all orgs
-  const pings = orgs.map(o => `<@&${o.member_role_id}>`).join(" ");
+  const pings = roleIds.map(roleId => `<@&${roleId}>`).join(" ");
   try {
     await ch.send(`🚨 **ALERTĂ RAZIE**: ${loc}\n${pings}\n${pings}`);
   } catch (err) {
