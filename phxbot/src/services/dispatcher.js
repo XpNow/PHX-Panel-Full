@@ -517,8 +517,6 @@ async function handleFalert(interaction, ctx) {
     const mins = Math.ceil(left / 60000);
     return sendEphemeral(interaction, "⏳ Cooldown global", `Comanda e pe cooldown. Mai încearcă în ~${mins} minute.`);
   }
-  setGlobal(ctx.db, "falert_last_ts", String(now()));
-
   // ping in alert channel
   const alertChId = ctx.settings.alert;
   if (!alertChId) return sendEphemeral(interaction, "Config lipsă", "Alert channel nu este setat în /famenu → Config → Canale.");
@@ -528,7 +526,12 @@ async function handleFalert(interaction, ctx) {
   });
   if (!ch || !ch.isTextBased()) return sendEphemeral(interaction, "Eroare", "Nu pot accesa alert channel. Verifică ID-ul/perms.");
 
-  const orgs = repo.listOrgs(ctx.db);
+  const orgs = repo.listOrgs(ctx.db).filter(org => org.kind === "ILLEGAL");
+  if (!orgs.length) {
+    return sendEphemeral(interaction, "Fără organizații ILLEGAL", "Nu există organizații ILLEGAL configurate pentru alertă.");
+  }
+
+  setGlobal(ctx.db, "falert_last_ts", String(now()));
   // ping roles: use member_role_id for all orgs
   const pings = orgs.map(o => `<@&${o.member_role_id}>`).join(" ");
   try {
