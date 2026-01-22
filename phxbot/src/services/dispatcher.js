@@ -891,6 +891,9 @@ async function setMemberRank(ctx, targetMember, orgId, desiredRank) {
     console.error(`[RANK] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
   }
+  if (!ctx.perms.staff && getOrgRank(ctx.member, org) !== "LEADER") {
+    return { ok:false, msg:"Doar liderul poate schimba rank-urile în organizație." };
+  }
   const rankCheck = canSetRank(ctx, org, desiredRank, targetMember);
   if (!rankCheck.ok) return { ok:false, msg: rankCheck.msg };
 
