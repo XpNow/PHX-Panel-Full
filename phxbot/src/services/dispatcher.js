@@ -547,13 +547,6 @@ function warnAddModal() {
   ]);
 }
 
-function warnRemoveModal() {
-  return modal("famenu:warn_remove_modal", "Șterge warn", [
-    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
-    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
-  ]);
-}
-
 function warnsView(ctx) {
   const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
   const buttons = [
@@ -590,58 +583,6 @@ function cooldownRemoveModal() {
   ]);
 }
 
-function warnAddModal() {
-  return modal("famenu:warn_add_modal", "Adaugă warn", [
-    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
-    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
-    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
-    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
-  ]);
-}
-
-function warnRemoveModal() {
-  return modal("famenu:warn_remove_modal", "Șterge warn", [
-    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
-    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
-  ]);
-}
-
-function warnsView(ctx) {
-  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
-  const buttons = [
-    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
-    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
-    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
-    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
-  ];
-  return { emb, rows: rowsFromButtons(buttons) };
-}
-
-function cooldownsAdminView(ctx) {
-  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
-  const buttons = [
-    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
-    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
-    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
-  ];
-  return { emb, rows: rowsFromButtons(buttons) };
-}
-
-function cooldownAddModal() {
-  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
-    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
-  ]);
-}
-
-function cooldownRemoveModal() {
-  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
-  ]);
-}
-
 function warnAddModalForm() {
   return modal("famenu:warn_add_modal", "Adaugă warn", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
@@ -658,41 +599,7 @@ function warnRemoveModal() {
   ]);
 }
 
-function warnsView(ctx) {
-  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
-  const buttons = [
-    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
-    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
-    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
-    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
-  ];
-  return { emb, rows: rowsFromButtons(buttons) };
-}
 
-function cooldownsAdminView(ctx) {
-  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
-  const buttons = [
-    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
-    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
-    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
-  ];
-  return { emb, rows: rowsFromButtons(buttons) };
-}
-
-function cooldownAddModal() {
-  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
-    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
-  ]);
-}
-
-function cooldownRemoveModal() {
-  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
-  ]);
-}
 
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
@@ -730,31 +637,6 @@ function setRankModal(orgId) {
   ]);
 }
 
-function reconcileOrgModal() {
-  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
-    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
-  ]);
-}
-
-function setRankModal(orgId) {
-  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
-  ]);
-}
-
-function reconcileOrgModal() {
-  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
-    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
-  ]);
-}
-
-function setRankModal(orgId) {
-  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
-    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
-    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
-  ]);
-}
 
 async function handleFalert(interaction, ctx) {
   const loc = interaction.options.getString("locatie", true);
