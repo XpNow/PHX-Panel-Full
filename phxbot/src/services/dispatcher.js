@@ -130,11 +130,12 @@ async function fetchMembersWithRetry(guild, label) {
   }
 }
 
-function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, expiresAt, totalWarn, warnId }) {
+function buildWarnEmbed({ orgName, orgRoleId, reason, dreptPlata, sanctiune, expiresAt, totalWarn, warnId }) {
   const lines = [
     `Organizație: ${orgRoleId ? `<@&${orgRoleId}>` : (orgName || "—")}`,
     `Motiv: ${reason || "—"}`,
     `DREPT PLATA: ${dreptPlata ? "DA" : "NU"}`,
+    `SANCTIUNEA OFERITA: ${sanctiune || "—"} ✅`,
     `Expiră: ${expiresAt ? formatTs(expiresAt) : "—"}`,
     `TOTAL WARN: ${totalWarn}`,
     "Status: ✅ VALIDĂ"
@@ -296,6 +297,7 @@ async function fmenuHome(interaction, ctx) {
         "⛔ Nu ai permisiuni de Lider/Co-Lider pentru a folosi /fmenu."
       );
     }
+    // Owner/staff hint to use /famenu for config, otherwise deny
     if (ctx.perms.staff) {
       return sendEphemeral(
         interaction,
@@ -320,7 +322,7 @@ async function fmenuHome(interaction, ctx) {
     description: "Deschide meniul organizației"
   }));
 
-  const emb = makeEmbed("Selectează organizația", "Ai acces la mai multe organizații. Alege una pentru a continua.");
+  const emb = makeEmbed("FMenu — Selectează organizația", "Ai acces la mai multe organizații. Alege una pentru a continua.");
   const menu = select("fmenu:pickorg", "Selectează organizația…", options);
   const row = new ActionRowBuilder().addComponents(menu);
   return sendEphemeral(interaction, emb.data.title, emb.data.description, [row]);
@@ -339,8 +341,8 @@ async function orgPanelView(interaction, ctx, orgId) {
 
   const counts = repo.listMembersByOrg(ctx.db, orgId).length;
   const emb = makeEmbed(
-    `${org.name}`,
-    `Tip: **${humanKind(org.kind)}**\nMembri înregistrați: **${counts}**\n\nAlege o acțiune:`
+    `FMenu — ${org.name}`,
+    `Tip: **${humanKind(org.kind)}**\nMembri înregistrați (DB): **${counts}**\n\nAlege o acțiune:`
   );
 
   const actorRank = getOrgRank(ctx.member, org);
@@ -458,13 +460,22 @@ function configChannelsView(ctx) {
   return { emb, rows: rowsFromButtons(buttons) };
 }
 
+function configRateLimitView(ctx) {
+  const emb = makeEmbed("Config — Rate limit", "Owner only. Limitează acțiunile pe minut.");
+  emb.setDescription(`${emb.data.description}\n\nAcum: **${ctx.settings.rateLimitPerMin}/min**`);
+  const buttons = [
+    btn("famenu:setratelimit", "Schimbă limită", ButtonStyle.Secondary),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
 
 async function famenuHome(interaction, ctx) {
   if (!ctx.perms.staff) {
     return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Owner/Admin/Supervisor pot folosi /famenu.");
   }
   const c = repo.counts(ctx.db);
-  const emb = makeEmbed("Admin Panel", `Organizații: **${c.orgs}** · Membri in DB: **${c.members}** · PK: **${c.pk}** · Ban: **${c.bans}**\n\nAlege un modul:`);
+  const emb = makeEmbed("FAMenu — Admin", `Organizații: **${c.orgs}** · Membri DB: **${c.members}** · PK: **${c.pk}** · Ban: **${c.bans}**\n\nAlege un modul:`);
   const buttons = [
     btn("famenu:orgs", "Organizații", ButtonStyle.Primary, "🏛️"),
     btn("famenu:config", "Config", ButtonStyle.Secondary, "⚙️"),
@@ -480,7 +491,7 @@ async function famenuConfig(interaction, ctx) {
   if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul poate modifica configurările.");
   const issues = configIssues(ctx);
   const desc = [
-    "Configureaza roluri și canale.",
+    "Setează roluri, canale și rate limit.",
     issues.length ? `\n⚠️ Probleme detectate:\n- ${issues.join("\n- ")}` : "\n✅ Configurarea pare completă."
   ].join("\n");
   const emb = makeEmbed("Config — Sistem", desc);
@@ -579,6 +590,58 @@ function cooldownRemoveModal() {
   ]);
 }
 
+function warnAddModal() {
+  return modal("famenu:warn_add_modal", "Adaugă warn", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("reason", "Motiv", undefined, true, "Ex: 2 Mafii la bătaie"),
+    input("drept_plata", "DREPT PLATA (DA/NU)", undefined, true, "DA / NU"),
+    input("sanctiune", "SANCTIUNEA OFERITA", undefined, true, "1/3 Mafia Warn")
+  ]);
+}
+
+function warnRemoveModal() {
+  return modal("famenu:warn_remove_modal", "Șterge warn", [
+    input("warn_id", "Warn ID", undefined, true, "Ex: UUID"),
+    input("reason", "Motiv (opțional)", undefined, false, "Ex: anulare")
+  ]);
+}
+
+function warnsView(ctx) {
+  const emb = makeEmbed("Warns", "Gestionare warn-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
+    btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:warn_list", "Listă active", ButtonStyle.Secondary, "📋"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownsAdminView(ctx) {
+  const emb = makeEmbed("Cooldowns", "Gestionează cooldown-uri (Supervisor/Owner).");
+  const buttons = [
+    btn("famenu:cooldown_add", "Adaugă cooldown", ButtonStyle.Primary, "➕"),
+    btn("famenu:cooldown_remove", "Șterge cooldown", ButtonStyle.Secondary, "🗑️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function cooldownAddModal() {
+  return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
+    input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
+  ]);
+}
+
+function cooldownRemoveModal() {
+  return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+  ]);
+}
+
 function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
@@ -615,6 +678,19 @@ function setRankModal(orgId) {
   ]);
 }
 
+function reconcileOrgModal() {
+  return modal("famenu:reconcile_org_modal", "Reconcile organizație", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+  ]);
+}
+
+function setRankModal(orgId) {
+  return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
+    input("user", "User ID sau @mention", undefined, true, "Ex: 123... / @Player"),
+    input("rank", "Rank (LEADER/COLEADER/MEMBER)", undefined, true, "Ex: COLEADER")
+  ]);
+}
+
 async function handleFalert(interaction, ctx) {
   const loc = interaction.options.getString("locatie", true);
   const last = Number(getGlobal(ctx.db, "falert_last_ts") || "0");
@@ -626,8 +702,9 @@ async function handleFalert(interaction, ctx) {
   const illegalOrgs = repo.listOrgs(ctx.db).filter(org => org.kind === "ILLEGAL");
   const hasIllegalRole = illegalOrgs.some(org => hasRole(ctx.member, org.member_role_id));
   if (!hasIllegalRole && !ctx.perms.staff) {
-    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar membrii organizațiilor pot folosi /falert.");
+    return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar membrii organizațiilor ILLEGAL pot folosi /falert.");
   }
+  // ping in alert channel
   const alertChId = ctx.settings.alert;
   if (!alertChId) return sendEphemeral(interaction, "Config lipsă", "Alert channel nu este setat în /famenu → Config → Canale.");
   const ch = await ctx.guild.channels.fetch(alertChId).catch((err)=> {
@@ -647,14 +724,15 @@ async function handleFalert(interaction, ctx) {
   }
 
   setGlobal(ctx.db, "falert_last_ts", String(now()));
+  // ping roles: use member_role_id for all orgs
   const pings = roleIds.map(roleId => `<@&${roleId}>`).join(" ");
   try {
-    await ch.send(`🚨 **ALERTĂ RAZIE**: ${loc}\n${pings}\nDe catre: <@${ctx.uid}>`);
+    await ch.send(`🚨 **ALERTĂ RAZIE**: ${loc}\n${pings}\n${pings}`);
   } catch (err) {
     console.error("[FALERT] send failed:", err);
     return sendEphemeral(interaction, "Eroare", "Nu pot trimite alerta. Verifică permisiunile botului.");
   }
-  await audit(ctx, "ALERTĂ RAZIE", `Locație: ${loc}\nDe catre: <@${ctx.uid}>`);
+  await audit(ctx, "ALERTĂ RAZIE", `Locație: ${loc}\nDe: <@${ctx.uid}>`);
   return sendEphemeral(interaction, "Trimis", `Alerta a fost trimisă în <#${alertChId}>.`);
 }
 
@@ -663,6 +741,7 @@ async function reconcileOrg(ctx, orgId, members) {
   if (!org) return { ok:false, msg:"Organizația nu există." };
   if (!members) return { ok:false, msg:"Nu pot prelua membrii guild-ului." };
 
+  const orgs = repo.listOrgs(ctx.db);
   const discordMembers = members.filter(m => m.roles.cache.has(org.member_role_id));
   const discordIds = new Set(discordMembers.map(m => m.id));
   const dbMembers = repo.listMembersByOrg(ctx.db, orgId);
@@ -670,11 +749,18 @@ async function reconcileOrg(ctx, orgId, members) {
 
   let added = 0;
   let removed = 0;
+  const multiOrg = [];
 
   for (const m of discordMembers.values()) {
     if (!dbIds.has(m.id)) {
       repo.upsertMembership(ctx.db, m.id, orgId, "MEMBER");
       added++;
+    }
+    const otherOrgs = orgs
+      .filter(o => o.id !== org.id && o.member_role_id && m.roles.cache.has(o.member_role_id))
+      .map(o => o.name);
+    if (otherOrgs.length) {
+      multiOrg.push(`<@${m.id}> → ${otherOrgs.join(", ")}`);
     }
   }
   for (const row of dbMembers) {
@@ -686,7 +772,12 @@ async function reconcileOrg(ctx, orgId, members) {
   }
 
   if (added || removed) {
-    await audit(ctx, "Reconcile organizație", `Org: **${org.name}** | Added: **${added}** | Removed: **${removed}** | De catre: <@${ctx.uid}>`);
+    await audit(ctx, "Reconcile organizație", `Org: **${org.name}** | Added: **${added}** | Removed: **${removed}** | De: <@${ctx.uid}>`);
+  }
+  if (multiOrg.length) {
+    const sample = multiOrg.slice(0, 8).join("\n");
+    const extra = multiOrg.length > 8 ? `\n...și încă ${multiOrg.length - 8}` : "";
+    await audit(ctx, "Avertisment org-uri multiple", `Org: **${org.name}**\nDetectați membri cu roluri multiple (nu s-a făcut auto-fix):\n${sample}${extra}`);
   }
 
   return { ok:true, added, removed, org };
@@ -766,7 +857,7 @@ async function reconcileCooldownRoles(ctx, members) {
         repo.upsertCooldown(ctx.db, m.id, "PK", expiresAt, null, nowTs);
         pkMap.set(m.id, { user_id: m.id });
         pkAdded++;
-        await audit(ctx, "Reconcile PK", `User: <@${m.id}> | PK creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De catre: <@${ctx.uid}>`);
+        await audit(ctx, "Reconcile PK", `User: <@${m.id}> | PK creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
       }
     }
   }
@@ -779,13 +870,13 @@ async function reconcileCooldownRoles(ctx, members) {
         repo.upsertCooldown(ctx.db, m.id, "BAN", expiresAt, null, nowTs);
         banMap.set(m.id, { user_id: m.id });
         banAdded++;
-        await audit(ctx, "Reconcile BAN", `User: <@${m.id}> | BAN creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De catre: <@${ctx.uid}>`);
+        await audit(ctx, "Reconcile BAN", `User: <@${m.id}> | BAN creat (manual role detectat) | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
       }
     }
   }
 
   if (pkAdded || pkRemoved || banAdded || banRemoved) {
-    await audit(ctx, "Reconcile cooldowns", `PK: +${pkAdded}/-${pkRemoved} | BAN: +${banAdded}/-${banRemoved} | De catre: <@${ctx.uid}>`);
+    await audit(ctx, "Reconcile cooldowns", `PK: +${pkAdded}/-${pkRemoved} | BAN: +${banAdded}/-${banRemoved} | De: <@${ctx.uid}>`);
   }
 
   return { ok:true, pkAdded, pkRemoved, banAdded, banRemoved };
@@ -797,6 +888,7 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
     console.error("[PK] pk_role_id missing in settings");
     return { ok:false, msg:"PK role nu este setat." };
   }
+  // remove org member role
   const org = repo.getOrg(ctx.db, orgId);
   if (org) {
     const canManage = canManageTargetRank(ctx, org, targetMember);
@@ -815,7 +907,7 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
 
   const addedPk = await safeRoleAdd(targetMember, pkRole, `Apply PK for ${targetMember.id}`);
   if (!addedPk) return { ok:false, msg:"Nu pot aplica rolul PK (permisiuni lipsă)." };
-  await audit(ctx, "Remove cu PK", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | Expiră: ${formatTs(expiresAt)} | De catre: <@${byUserId}>`);
+  await audit(ctx, "Remove cu PK", `User: <@${targetMember.id}> | Org: **${org?.name ?? orgId}** | Expiră: ${formatTs(expiresAt)} | De: <@${byUserId}>`);
   return { ok:true };
 }
 
@@ -833,7 +925,7 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId) {
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   repo.removeMembership(ctx.db, targetMember.id);
   repo.upsertLastOrgState(ctx.db, targetMember.id, orgId, now(), byUserId);
-  await audit(ctx, "Membru scos", `User: <@${targetMember.id}> | Org: **${org.name}** | De catre: <@${byUserId}>`);
+  await audit(ctx, "Membru scos", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${byUserId}>`);
   return { ok:true };
 }
 
@@ -842,6 +934,17 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   if (!org) {
     console.error(`[ADD] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
+  }
+
+  const orgs = repo.listOrgs(ctx.db);
+  const otherOrgRoles = orgs
+    .filter(o => o.id !== org.id && o.member_role_id && targetMember.roles.cache.has(o.member_role_id))
+    .map(o => o.name);
+  if (otherOrgRoles.length && !ctx.perms.staff) {
+    return { ok:false, msg:`Userul are deja rol(uri) de organizație: ${otherOrgRoles.join(", ")}.` };
+  }
+  if (otherOrgRoles.length && ctx.perms.staff) {
+    await audit(ctx, "Avertisment organizații multiple", `User: <@${targetMember.id}> | Org țintă: **${org.name}** | Alte org-uri: ${otherOrgRoles.join(", ")}`);
   }
 
   const existing = repo.getMembership(ctx.db, targetMember.id);
@@ -864,6 +967,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
     return { ok:false, msg:"Userul este în cooldown (PK)."};
   }
 
+  // Remove pk role if present (cleanup)
   if (ctx.settings.pkRole) await safeRoleRemove(targetMember, ctx.settings.pkRole, `Cleanup PK for ${targetMember.id}`);
   if (ctx.settings.banRole) await safeRoleRemove(targetMember, ctx.settings.banRole, `Cleanup BAN for ${targetMember.id}`);
 
@@ -872,7 +976,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   const added = await safeRoleAdd(targetMember, org.member_role_id, `Add org role for ${targetMember.id}`);
   if (!added) return { ok:false, msg:"Nu pot adăuga rolul organizației (permisiuni lipsă)." };
   repo.upsertMembership(ctx.db, targetMember.id, orgId, role || "MEMBER");
-  await audit(ctx, "Membru adăugat", `User: <@${targetMember.id}> | Org: **${org.name}** | De catre: <@${ctx.uid}>`);
+  await audit(ctx, "Membru adăugat", `User: <@${targetMember.id}> | Org: **${org.name}** | De: <@${ctx.uid}>`);
   return { ok:true };
 }
 
@@ -923,7 +1027,7 @@ async function setMemberRank(ctx, targetMember, orgId, desiredRank) {
     }
   }
 
-  await audit(ctx, "Update rank", `User: <@${targetMember.id}> | Org: **${org.name}** | Rank: **${desiredRank}** | De catre: <@${ctx.uid}>`);
+  await audit(ctx, "Update rank", `User: <@${targetMember.id}> | Org: **${org.name}** | Rank: **${desiredRank}** | De: <@${ctx.uid}>`);
   return { ok:true };
 }
 
@@ -997,6 +1101,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
     lines.push("Ultima plecare din org: —");
   }
 
+  // Leaders should not see org name. Admins may later.
   if (ctx.perms.staff) {
     if (member) {
       const org = repo.getOrg(ctx.db, member.org_id);
@@ -1007,7 +1112,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
       lines.push(`Ultima org: **${lastOrg?.name ?? last.last_org_id}**`);
     }
     if (last?.last_removed_by) {
-      lines.push(`Scos de catre: <@${last.last_removed_by}>`);
+      lines.push(`Scos de: <@${last.last_removed_by}>`);
     }
   }
 
@@ -1088,10 +1193,8 @@ async function handleModal(interaction, ctx) {
       return sendEphemeral(interaction, "Config lipsă", "PK role nu este setat. Setează-l în /famenu → Config → Roluri.");
     }
 
-    const members = await ctx.guild.members.fetch().catch((err)=> {
-      console.error("[DELETE ORG] fetch members failed:", err);
-      return null;
-    });
+    // Put everyone in PK cooldown 3 days on delete
+    const members = await fetchMembersWithRetry(ctx.guild, "DELETE ORG");
     if (!members) return sendEphemeral(interaction, "Eroare", "Nu pot prelua membrii guild-ului pentru PK.");
     {
       const orgMembers = members.filter(m =>
@@ -1132,10 +1235,12 @@ async function handleModal(interaction, ctx) {
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     const reason = interaction.fields.getTextInputValue("reason")?.trim();
     const dreptPlataRaw = interaction.fields.getTextInputValue("drept_plata")?.trim();
+    const sanctiune = interaction.fields.getTextInputValue("sanctiune")?.trim();
     const dreptPlata = parseYesNo(dreptPlataRaw);
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     if (!reason) return sendEphemeral(interaction, "Eroare", "Motivul este obligatoriu.");
     if (dreptPlata === null) return sendEphemeral(interaction, "Eroare", "DREPT PLATA trebuie să fie DA/NU.");
+    if (!sanctiune) return sendEphemeral(interaction, "Eroare", "Sanctiunea este obligatorie.");
     if (!ctx.settings.warn) return sendEphemeral(interaction, "Config lipsă", "Warn channel nu este setat în /famenu → Config → Canale.");
 
     await interaction.deferReply({ ephemeral: true });
@@ -1159,6 +1264,7 @@ async function handleModal(interaction, ctx) {
       org_role_id: org.member_role_id,
       reason,
       drept_plata: dreptPlata,
+      sanctiune,
       expira_90: true,
       created_by: ctx.uid,
       total_warn: totalWarn
@@ -1180,6 +1286,7 @@ async function handleModal(interaction, ctx) {
       orgRoleId: org.member_role_id,
       reason,
       dreptPlata,
+      sanctiune,
       expiresAt,
       totalWarn,
       warnId
@@ -1187,7 +1294,7 @@ async function handleModal(interaction, ctx) {
     const msgRes = await sendWarnMessage(ctx, warnEmbed);
     if (!msgRes.ok) return interaction.editReply({ embeds: [makeEmbed("Eroare", msgRes.msg || "Nu pot trimite warn.")] });
     repo.updateWarnMessageId(ctx.db, warnId, msgRes.messageId);
-    await audit(ctx, "Warn aplicat", `Organizație: **${org.name}** | Warn ID: \`${warnId}\` | Expiră: ${formatTs(expiresAt)} | De catre: <@${ctx.uid}>`);
+    await audit(ctx, "Warn aplicat", `Organizație: **${org.name}** | Warn ID: \`${warnId}\` | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
     return interaction.editReply({ embeds: [makeEmbed("Warn creat", `Warn \`${warnId}\` pentru **${org.name}** (expiră ${formatTs(expiresAt)}).`)] });
   }
 
@@ -1207,7 +1314,7 @@ async function handleModal(interaction, ctx) {
         if (msg) {
           const embed = msg.embeds?.[0];
           const eb = new EmbedBuilder(embed?.data ?? {});
-          const nextDesc = setWarnStatusLine(eb.data.description || "", "Status: ❌ ȘTEARSĂ");
+          const nextDesc = setWarnStatusLine(eb.data.description || "", "Status: ✅ ȘTEARSĂ");
           eb.setDescription(nextDesc)
             .setColor(COLORS.ERROR)
             .setFooter({ text: `ȘTERS • ${reason || "fără motiv"}` });
@@ -1218,7 +1325,7 @@ async function handleModal(interaction, ctx) {
       }
     }
 
-    await audit(ctx, "Warn șters", `Warn ID: \`${warnId}\` | De catre: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
+    await audit(ctx, "Warn șters", `Warn ID: \`${warnId}\` | De: <@${ctx.uid}> | Motiv: ${reason || "-"}`);
     return sendEphemeral(interaction, "Warn șters", `Warn \`${warnId}\` a fost marcat ca REMOVED.`);
   }
 
@@ -1246,7 +1353,7 @@ async function handleModal(interaction, ctx) {
       const added = await safeRoleAdd(member, roleId, `Cooldown add ${kindRaw} for ${userId}`);
       if (!added) return sendEphemeral(interaction, "Eroare", "Nu pot aplica rolul cooldown (permisiuni lipsă).");
     }
-    await audit(ctx, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De catre: <@${ctx.uid}>`);
+    await audit(ctx, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)} | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown aplicat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatTs(expiresAt)}`);
   }
 
@@ -1264,15 +1371,19 @@ async function handleModal(interaction, ctx) {
     if (!roleId) return sendEphemeral(interaction, "Config lipsă", `Rolul ${kindRaw} nu este setat în /famenu → Config → Roluri.`);
     const roleCheckRes = roleCheck(ctx, roleId, kindRaw.toLowerCase());
     if (!roleCheckRes.ok) return sendEphemeral(interaction, "Eroare", roleCheckRes.msg);
-    repo.clearCooldown(ctx.db, userId, kindRaw);
     const member = await ctx.guild.members.fetch(userId).catch(()=>null);
     if (member) {
-      await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
+      const removed = await safeRoleRemove(member, roleId, `Cooldown remove ${kindRaw} for ${userId}`);
+      if (!removed) {
+        return sendEphemeral(interaction, "Eroare", "Nu pot elimina rolul cooldown (permisiuni lipsă).");
+      }
     }
-    await audit(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}** | De catre: <@${ctx.uid}>`);
+    repo.clearCooldown(ctx.db, userId, kindRaw);
+    await audit(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}** | De: <@${ctx.uid}>`);
     return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
   }
 
+  // org add/remove/search
   if (id.endsWith(":add_modal")) {
     const orgId = Number(id.split(":")[1]);
     const users = parseUserIds(interaction.fields.getTextInputValue("users"));
@@ -1402,6 +1513,64 @@ async function handleComponent(interaction, ctx) {
     if (!requireOwner(ctx)) return sendEphemeral(interaction, "⛔ Owner only", "Doar ownerul.");
     const view = configChannelsView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+
+  if (id === "famenu:reconcile_global") {
+    if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
+    await interaction.deferReply({ ephemeral: true });
+    const members = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
+    if (!members) return interaction.editReply({ embeds: [makeEmbed("Eroare", "Nu pot prelua membrii guild-ului.")] });
+    let added = 0;
+    let removed = 0;
+    for (const org of repo.listOrgs(ctx.db)) {
+      const res = await reconcileOrg(ctx, org.id, members);
+      if (res.ok) {
+        added += res.added;
+        removed += res.removed;
+      }
+    }
+    const cdRes = await reconcileCooldownRoles(ctx, members);
+    const summary = [
+      `Organizații: +${added}/-${removed}`,
+      cdRes.ok ? `Cooldowns: PK +${cdRes.pkAdded}/-${cdRes.pkRemoved} | BAN +${cdRes.banAdded}/-${cdRes.banRemoved}` : "Cooldowns: eroare"
+    ].join("\n");
+    return interaction.editReply({ embeds: [makeEmbed("Reconcile global", summary)] });
+  }
+  if (id === "famenu:reconcile_org") {
+    if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
+    return showModalSafe(interaction, reconcileOrgModal());
+  }
+
+  if (id === "famenu:warn_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnAddModal());
+  }
+  if (id === "famenu:warn_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    return showModalSafe(interaction, warnRemoveModal());
+  }
+  if (id === "famenu:warn_list") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona warn-uri.");
+    const warns = repo.listWarnsByStatus(ctx.db, "ACTIVE", 10);
+    const desc = warns.length
+      ? warns.map(w => {
+        let payload = {};
+        try { payload = JSON.parse(w.payload_json); } catch {}
+        const orgLabel = payload.org_role_id ? `<@&${payload.org_role_id}>` : (payload.org_name || `Org ${w.org_id || "-"}`);
+        const exp = w.expires_at ? formatTs(w.expires_at) : "—";
+        return `• \`${w.warn_id}\` | ${orgLabel} | Expiră: ${exp}`;
+      }).join("\n")
+      : "Nu există warn-uri active.";
+    const emb = makeEmbed("⚠️ Warns active", desc);
+    return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons([btn("famenu:back","Back",ButtonStyle.Secondary,"⬅️")]));
+  }
+  if (id === "famenu:cooldown_add") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownAddModal());
+  }
+  if (id === "famenu:cooldown_remove") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner pot gestiona cooldown-uri.");
+    return showModalSafe(interaction, cooldownRemoveModal());
   }
 
   if (id === "famenu:reconcile_global") {

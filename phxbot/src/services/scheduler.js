@@ -25,20 +25,7 @@ async function tick({ client, db }) {
   const guild = await client.guilds.fetch(guildId).catch(() => null);
   if (!guild) return;
 
-  const buildWarnEmbed = (payload, warnId, expiresAt) => {
-    const lines = [
-      `Organizație: ${payload?.org_role_id ? `<@&${payload.org_role_id}>` : (payload?.org_name || "—")}`,
-      `Motiv: ${payload?.reason || "—"}`,
-      `DREPT PLATA: ${payload?.drept_plata ? "DA" : "NU"}`,
-      `SANCTIUNEA OFERITA: ${payload?.sanctiune || "—"}`,
-      `Expiră: ${expiresAt ? `<t:${Math.floor(expiresAt/1000)}:f>` : "—"}`,
-      `TOTAL WARN: ${payload?.total_warn || "—"}`
-    ];
-    const emb = new EmbedBuilder().setTitle("⚠️ WARN").setDescription(lines.join("\n"));
-    if (warnId) emb.setFooter({ text: `WARN ID: ${warnId}` });
-    return emb;
-  };
-
+  // Expire cooldowns
   const now = Date.now();
   const expCooldowns = listExpiringCooldowns(db, now);
   const pkRole = getSetting(db, 'pk_role_id');
@@ -46,12 +33,25 @@ async function tick({ client, db }) {
   for (const cd of expCooldowns) {
     const member = await guild.members.fetch(cd.user_id).catch(() => null);
     if (member) {
-      if (cd.kind === 'PK' && pkRole) await member.roles.remove(pkRole).catch(() => {});
-      if (cd.kind === 'BAN' && banRole) await member.roles.remove(banRole).catch(() => {});
+      if (cd.kind === 'PK' && pkRole && member.roles.cache.has(pkRole)) {
+        const removed = await member.roles.remove(pkRole).catch((err) => {
+          console.error(`[SCHEDULER] PK remove failed for ${cd.user_id}:`, err);
+          return false;
+        });
+        if (!removed) continue;
+      }
+      if (cd.kind === 'BAN' && banRole && member.roles.cache.has(banRole)) {
+        const removed = await member.roles.remove(banRole).catch((err) => {
+          console.error(`[SCHEDULER] BAN remove failed for ${cd.user_id}:`, err);
+          return false;
+        });
+        if (!removed) continue;
+      }
     }
     clearCooldown(db, cd.user_id, cd.kind);
   }
 
+  // Expire warns: edit message + mark EXPIRED
   const warnChannelId = getSetting(db, 'warn_channel_id');
   if (warnChannelId) {
     const channel = await guild.channels.fetch(warnChannelId).catch(() => null);
