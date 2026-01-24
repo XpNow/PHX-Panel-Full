@@ -4,9 +4,7 @@ import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
 
 export function runSchedulers({ client, db }) {
-  // every 60s
   setInterval(() => tick({ client, db }).catch(() => {}), 60 * 1000);
-  // immediate
   tick({ client, db }).catch(() => {});
 }
 
@@ -41,7 +39,6 @@ async function tick({ client, db }) {
     return emb;
   };
 
-  // Expire cooldowns
   const now = Date.now();
   const expCooldowns = listExpiringCooldowns(db, now);
   const pkRole = getSetting(db, 'pk_role_id');
@@ -55,7 +52,6 @@ async function tick({ client, db }) {
     clearCooldown(db, cd.user_id, cd.kind);
   }
 
-  // Expire warns: edit message + mark EXPIRED
   const warnChannelId = getSetting(db, 'warn_channel_id');
   if (warnChannelId) {
     const channel = await guild.channels.fetch(warnChannelId).catch(() => null);
@@ -75,7 +71,6 @@ async function tick({ client, db }) {
           }
           setWarnStatus(db, w.warn_id, 'EXPIRED');
         } catch {
-          // ignore
         }
       }
 
