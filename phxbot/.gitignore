@@ -1,2 +1,29 @@
+# 📁 .gitignore
+
+# Node
 node_modules/
-data/
+
+# Env
+.env
+
+# DB
+*.sqlite
+*.db
+/data
+/data/*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Build
+dist/
+build/
+
+# Temp
+.tmp/
+.cache/
