@@ -42,7 +42,13 @@ export function upsertMembership(db, userId, orgId, role) {
   db.prepare(`
     INSERT INTO memberships(user_id, org_id, role, since_ts)
     VALUES(?,?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET org_id=excluded.org_id, role=excluded.role, since_ts=excluded.since_ts
+    ON CONFLICT(user_id) DO UPDATE SET
+      org_id=excluded.org_id,
+      role=excluded.role,
+      since_ts=CASE
+        WHEN memberships.org_id = excluded.org_id THEN memberships.since_ts
+        ELSE excluded.since_ts
+      END
   `).run(userId, orgId, role, now);
 }
 export function removeMembership(db, userId) {
@@ -114,6 +120,19 @@ export function getWarn(db, warnId) {
 }
 export function listWarnsByStatus(db, status, limit=20) {
   return db.prepare("SELECT * FROM warns WHERE status=? ORDER BY created_at DESC LIMIT ?").all(status, limit);
+}
+
+export function listWarnsByOrg(db, orgId, status = null, limit = 500) {
+  const oid = Number(orgId);
+  if (!Number.isFinite(oid)) return [];
+  if (status) {
+    return db
+      .prepare("SELECT * FROM warns WHERE org_id=? AND status=? ORDER BY created_at DESC LIMIT ?")
+      .all(oid, status, limit);
+  }
+  return db
+    .prepare("SELECT * FROM warns WHERE org_id=? ORDER BY created_at DESC LIMIT ?")
+    .all(oid, limit);
 }
 export function setWarnStatus(db, warnId, status) {
   db.prepare("UPDATE warns SET status=? WHERE warn_id=?").run(status, warnId);
