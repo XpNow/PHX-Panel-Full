@@ -4,9 +4,10 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
+    "dev": "nodemon --watch src --watch scripts --ext js,cjs,json bootstrap.cjs",
     "start": "node bootstrap.cjs",
-    "initdb": "node scripts/init-db.js",
-    "register": "node scripts/register-commands.js"
+    "register": "node scripts/register-commands.js",
+    "initdb": "node scripts/initdb.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.6.0",
@@ -15,5 +16,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
   }
 }
