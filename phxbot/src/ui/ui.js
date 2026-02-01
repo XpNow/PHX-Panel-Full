@@ -1,8 +1,23 @@
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, EmbedBuilder } from "discord.js";
+import { COLORS } from "./theme.js";
 
-export function makeEmbed(title, desc) {
+export function makeEmbed(title, desc, color = COLORS.GLOBAL) {
   const safeDesc = (desc ?? "").trim();
-  return new EmbedBuilder().setTitle(title).setDescription(safeDesc || "—");
+  const e = new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(safeDesc || "—")
+    .setColor(color);
+
+  const brandText = (process.env.BRAND_TEXT || "Phoenix Faction Manager").trim();
+  const brandIconUrl = (process.env.BRAND_ICON_URL || "").trim();
+  if (brandText) {
+    e.setFooter({
+      text: brandText,
+      ...(brandIconUrl ? { iconURL: brandIconUrl } : {})
+    });
+  }
+
+  return e;
 }
 
 export function rowsFromButtons(buttons, maxPerRow=5) {
@@ -21,7 +36,6 @@ export function rowsFromButtons(buttons, maxPerRow=5) {
 }
 
 export function safeComponents(rows) {
-  // remove empty rows
   return (rows || []).filter(r => {
     try {
       const comps = r.components ?? [];
