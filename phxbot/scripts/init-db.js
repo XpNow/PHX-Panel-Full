@@ -62,6 +62,10 @@ CREATE TABLE IF NOT EXISTS warns (
   payload_json TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS global_state (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 `);
 
 const defaults = [
@@ -72,7 +76,6 @@ const defaults = [
   ["supervisor_role_id", ""],
   ["pk_role_id", ""],
   ["ban_role_id", ""],
-  ["rate_limit_per_min", "20"]
 ];
 const upsert = db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)");
 for (const [k,v] of defaults) upsert.run(k,v);
