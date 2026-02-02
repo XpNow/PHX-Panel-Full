@@ -3,7 +3,6 @@ import path from "path";
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
 
-
 import { REST, Routes, SlashCommandBuilder, PermissionFlagsBits } from "discord.js";
 
 const token = process.env.DISCORD_TOKEN;
@@ -15,13 +14,19 @@ if (!token || !clientId || !guildId) {
   process.exit(1);
 }
 
-
-function addMultiUserOptions(cmd, max = 8) {
+/**
+ * Adds user options: user (required) + user2..userN (optional).
+ * IMPORTANT: Discord requires ALL required options to be placed BEFORE any optional options.
+ * Use `afterUser1` to inject other required options (e.g. pk) right after `user` and BEFORE user2..userN.
+ */
+function addMultiUserOptions(cmd, max = 8, { afterUser1 } = {}) {
   cmd.addUserOption(o =>
     o.setName("user")
-      .setDescription("User 1")
+      .setDescription("User (obligatoriu)")
       .setRequired(true)
   );
+
+  if (typeof afterUser1 === "function") afterUser1(cmd);
 
   for (let i = 2; i <= max; i++) {
     cmd.addUserOption(o =>
@@ -34,31 +39,46 @@ function addMultiUserOptions(cmd, max = 8) {
   return cmd;
 }
 
-const commands = [
-  new SlashCommandBuilder()
-    .setName("fmenu")
-    .setDescription("Meniu organizatie (Lider/Co-Lider)."),
-  new SlashCommandBuilder()
-    .setName("famenu")
-    .setDescription("Meniu administrare.")
-    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
-    .setDMPermission(false),
+const cmdFmenu = new SlashCommandBuilder()
+  .setName("fmenu")
+  .setDescription("Meniu organizatie (Lider/Co-Lider).")
+  .setDMPermission(false);
 
-    addMultiUserOptions(
-      new SlashCommandBuilder()
-        .setName("add")
-        .setDescription("Adaugă unul sau mai mulți membri în organizația ta.")
-        .setDMPermission(false),
-      8
-    ),
+const cmdFamenu = new SlashCommandBuilder()
+  .setName("famenu")
+  .setDescription("Meniu administrare.")
+  .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+  .setDMPermission(false);
+
+const cmdAdd = addMultiUserOptions(
+  new SlashCommandBuilder()
+    .setName("add")
+    .setDescription("Adaugă unul sau mai mulți membri în organizația ta (bulk).")
+    .setDMPermission(false),
+  8
+);
+
+// /rmv bulk: user required + pk required + optional users + optional text users
+const cmdRmv = addMultiUserOptions(
   new SlashCommandBuilder()
     .setName("rmv")
-    .setDescription("Scoate membru din organizație (opțional cu PK).")
-    .addUserOption(o => o.setName("user").setDescription("User de scos").setRequired(true))
-    .addBooleanOption(o => o.setName("pk").setDescription("Aplică PK? (DA/NU)").setRequired(false))
+    .setDescription("Scoate unul sau mai mulți membri din organizație (bulk).")
     .setDMPermission(false),
+  8,
+  {
+    afterUser1: (cmd) => cmd.addBooleanOption(o =>
+      o.setName("pk")
+        .setDescription("Aplică PK? (DA/NU)")
+        .setRequired(true)
+    )
+  }
+).addStringOption(o =>
+  o.setName("users")
+    .setDescription("Extra users (mențiuni/ID-uri). Max total 30.")
+    .setRequired(false)
+);
 
-].map(c=>c.toJSON());
+const commands = [cmdFmenu, cmdFamenu, cmdAdd, cmdRmv].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(token);
 
