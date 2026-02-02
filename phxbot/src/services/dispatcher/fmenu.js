@@ -161,7 +161,7 @@ async function orgPanelView(interaction, ctx, orgId) {
   const discordCount = memberRole ? memberRole.members.size : 0;
   const emb = makeEmbed(
     `${org.name}`,
-    `Tip: **${humanKind(org.kind)}**\nMembri (Discord): **${discordCount}**\nMembri (DB): **${dbCount}**\n\nAlege o acțiune:`
+    `Tip: **${humanKind(org.kind)}**\nMembri: **${dbCount}**\n\nAlege o acțiune:`
   );
 
   const actorRank = getOrgRank(ctx.member, org);
@@ -469,78 +469,170 @@ if (org.leader_role_id) {
   });
 }
 
-async function rosterView(interaction, ctx, orgId, useEditReply = false) {
+async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 1, useUpdate = false) {
+  const PAGE_SIZE = 25;
+
   const org = repo.getOrg(ctx.db, orgId);
   if (!org) {
     const emb = makeEmbed("Eroare", "Organizația nu există.");
-    return useEditReply
-      ? interaction.editReply({ embeds: [emb] })
-      : sendEphemeral(interaction, emb.data.title, emb.data.description);
+    return useUpdate
+      ? interaction.update({ embeds: [emb], components: [] })
+      : (useEditReply
+          ? interaction.editReply({ embeds: [emb], components: [] })
+          : sendEphemeral(interaction, emb.data.title, emb.data.description));
   }
 
   if (!org.member_role_id) {
     const emb = makeEmbed("Eroare", "Organizația nu are setat rolul de membru.");
-    return useEditReply
-      ? interaction.editReply({ embeds: [emb] })
-      : sendEphemeral(interaction, emb.data.title, emb.data.description);
+    return useUpdate
+      ? interaction.update({ embeds: [emb], components: [] })
+      : (useEditReply
+          ? interaction.editReply({ embeds: [emb], components: [] })
+          : sendEphemeral(interaction, emb.data.title, emb.data.description));
   }
 
   const memberRole = ctx.guild.roles.cache.get(org.member_role_id);
   if (!memberRole) {
     const emb = makeEmbed("Eroare", "Rolul de membru nu există pe server.");
-    return useEditReply
-      ? interaction.editReply({ embeds: [emb] })
-      : sendEphemeral(interaction, emb.data.title, emb.data.description);
+    return useUpdate
+      ? interaction.update({ embeds: [emb], components: [] })
+      : (useEditReply
+          ? interaction.editReply({ embeds: [emb], components: [] })
+          : sendEphemeral(interaction, emb.data.title, emb.data.description));
   }
 
-  const cached = rosterCache.get(orgId);
-  if (cached && Date.now() - cached.ts < ROSTER_CACHE_MS) {
-    const emb = makeEmbed(cached.title, cached.desc);
-    const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
+  const renderFromLines = (title, lines, missingOrgRoleCount) => {
+    const total = lines.length;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.min(Math.max(1, Number(page) || 1), totalPages);
+
+    const start = (safePage - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const shown = lines.slice(start, end);
+
+    const countLine =
+      `**Membri:** **${total}**` +
+      (missingOrgRoleCount ? ` • ❌ Fără rol Discord: **${missingOrgRoleCount}**` : "");
+
+    const listPart = shown.length ? shown.join("\n") : "Nu există membri în organizație (în DB).";
+    const desc = `${countLine}\n\n${listPart}`;
+
+    const emb = makeEmbed(title, desc, COLORS.GLOBAL);
+    if (typeof emb.setFooter === "function") {
+      emb.setFooter({ text: `Pagina ${safePage}/${totalPages}` });
+    }
+
+    const buttons = [];
+    const prevDisabled = safePage <= 1;
+    const nextDisabled = safePage >= totalPages;
+
+    buttons.push(
+      btn(`org:${orgId}:roster:${safePage - 1}`, "Prev", ButtonStyle.Secondary, "◀️", prevDisabled)
+    );
+
+    buttons.push(btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️"));
+
+    buttons.push(
+      btn(`org:${orgId}:roster:${safePage + 1}`, "Next", ButtonStyle.Secondary, "▶️", nextDisabled)
+    );
+
+    if (useUpdate) {
+      return interaction.update({ embeds: [emb], components: rowsFromButtons(buttons) });
+    }
     return useEditReply
       ? interaction.editReply({ embeds: [emb], components: rowsFromButtons(buttons) })
       : sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
+  };
+
+  const cached = rosterCache.get(orgId);
+  if (
+    cached &&
+    Date.now() - cached.ts < ROSTER_CACHE_MS &&
+    Array.isArray(cached.lines) &&
+    typeof cached.title === "string"
+  ) {
+    return renderFromLines(cached.title, cached.lines, cached.missingOrgRole || 0);
+  }
+
+  try {
+    await ctx.guild.members.fetch();
+  } catch (e) {
+    const msg = String(e?.message || "");
+    const m = msg.match(/Retry after\s+([0-9.]+)\s+seconds/i);
+    const waitSec = m ? Math.ceil(Number(m[1])) : null;
+
+    const emb = makeBrandedEmbed(
+      ctx,
+      "⏳ Prea multe cereri (rate limit)",
+      waitSec
+        ? `Te rog încearcă din nou în **${waitSec} secunde**.`
+        : "Te rog încearcă din nou în câteva secunde."
+    );
+
+    const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
+
+    return useUpdate
+      ? interaction.update({ embeds: [emb], components: rowsFromButtons(buttons) })
+      : (useEditReply
+          ? interaction.editReply({ embeds: [emb], components: rowsFromButtons(buttons) })
+          : sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons)));
   }
 
   const leaderRole = org.leader_role_id ? ctx.guild.roles.cache.get(org.leader_role_id) : null;
   const coLeaderRole = org.co_leader_role_id ? ctx.guild.roles.cache.get(org.co_leader_role_id) : null;
 
+  const dbMembers = repo.listMembersByOrg(ctx.db, orgId);
+  const discordMembersWithOrgRole = memberRole.members;
+
   const entries = [];
-  for (const m of memberRole.members.values()) {
+  let missingOrgRole = 0;
+
+  for (const row of dbMembers) {
+    const uid = String(row.user_id);
+    const hasOrg = discordMembersWithOrgRole.has(uid);
+
+    if (!hasOrg) missingOrgRole++;
+
     let label = "Membru";
-    if (leaderRole && m.roles.cache.has(leaderRole.id)) label = leaderRole.name;
-    else if (coLeaderRole && m.roles.cache.has(coLeaderRole.id)) label = coLeaderRole.name;
+    const m = hasOrg ? discordMembersWithOrgRole.get(uid) : (ctx.guild.members.cache.get(uid) || null);
+
+    if (m && leaderRole && m.roles.cache.has(leaderRole.id)) label = leaderRole.name;
+    else if (m && coLeaderRole && m.roles.cache.has(coLeaderRole.id)) label = coLeaderRole.name;
+    else {
+      const r = String(row.role || "").toUpperCase();
+      if (r === "LEADER") label = leaderRole?.name || "Leader";
+      else if (r === "COLEADER" || r === "CO_LEADER") label = coLeaderRole?.name || "Co-Leader";
+    }
 
     entries.push({
-      id: m.id,
+      id: uid,
       label,
-      order: label === leaderRole?.name ? 0 : label === coLeaderRole?.name ? 1 : 2
+      order: label === leaderRole?.name ? 0 : label === coLeaderRole?.name ? 1 : 2,
+      missing: !hasOrg
     });
   }
 
   entries.sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
 
-  const lines = entries.map(e => `• <@${e.id}> — **${e.label}**`);
-  const shown = lines.slice(0, 100);
-  const extra = lines.length > 100
-    ? `\n... și încă ${lines.length - 100} membri`
-    : "";
-
-  const countLine = `**Membri:** **${lines.length}**`;
-  const listPart = shown.length ? `${shown.join("\n")}${extra}` : "Nu există membri în organizație.";
-  const desc = `${countLine}\n\n${listPart}`;
+  const lines = entries.map(e =>
+    e.missing
+      ? `• ❌ <@${e.id}> — **${e.label}**`
+      : `• <@${e.id}> — **${e.label}**`
+  );
 
   const title = `Roster — ${org.name}`;
-  rosterCache.set(orgId, { ts: Date.now(), title, desc });
 
-  const emb = makeEmbed(title, desc, COLORS.GLOBAL);
-  const buttons = [btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")];
+  rosterCache.set(orgId, {
+    ts: Date.now(),
+    title,
+    lines,
+    missingOrgRole
+  });
 
-  if (useEditReply) {
-    return interaction.editReply({ embeds: [emb], components: rowsFromButtons(buttons) });
-  }
-  return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
+  return renderFromLines(title, lines, missingOrgRole);
 }
+
+
 
 async function searchResult(interaction, ctx, orgId, userId) {
   const target = await ctx.guild.members.fetch(userId).catch(()=>null);
@@ -598,6 +690,37 @@ function compactResultLines(lines, maxLines = 10) {
   const head = lines.slice(0, maxLines);
   return `${head.join("\n")}\n… și încă **${lines.length - maxLines}**`;
 }
+function parseExtraUserIdsFromText(text) {
+  const s = String(text || "");
+  const ids = [];
+
+  for (const m of s.matchAll(/<@!?(\d{15,25})>/g)) ids.push(m[1]);
+  for (const m of s.matchAll(/\b(\d{15,25})\b/g)) ids.push(m[1]);
+
+  const seen = new Set();
+  const out = [];
+  for (const id of ids) {
+    const k = String(id);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  return out;
+}
+
+function uniqIds(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const v of (arr || [])) {
+    const k = String(v);
+    if (!k) continue;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+  }
+  return out;
+}
+
 
 async function slashAddCommand(interaction, ctx) {
   const users = collectUsersFromOptions(interaction, 8);
@@ -644,32 +767,83 @@ async function slashAddCommand(interaction, ctx) {
 }
 
 async function slashRmvCommand(interaction, ctx) {
-  const user = interaction.options.getUser("user", true);
-  const pk = interaction.options.getBoolean("pk") || false;
+  const picked = collectUsersFromOptions(interaction, 8);
+  const pk = interaction.options.getBoolean("pk", true);
+  const extraText = interaction.options.getString("users") || "";
+
+  if (!picked.length) {
+    return sendEphemeral(interaction, "Eroare", "Trebuie să selectezi cel puțin un user.");
+  }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  const targetMember = await fetchTargetMember(ctx, user.id);
-  if (!targetMember) {
-    return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Nu pot găsi userul în guild.")] });
+  const extraIds = parseExtraUserIdsFromText(extraText);
+  const allIds = uniqIds([
+    ...picked.map(u => u.id),
+    ...extraIds
+  ]).slice(0, 30);
+
+  let ok = 0, fail = 0;
+  const lines = [];
+
+  for (const uid of allIds) {
+    const targetMember = await fetchTargetMember(ctx, uid);
+
+    if (!targetMember) {
+      const mrow = repo.getMember(ctx.db, uid);
+      if (mrow && Number(mrow.org_id) > 0) {
+        const dbOrgId = Number(mrow.org_id);
+        try {
+          repo.removeMemberFromOrg(ctx.db, dbOrgId, uid); 
+          lines.push(`✅ <@${uid}> - scos din DB (nu mai este pe Discord)`);
+          ok++;
+          continue;
+        } catch (e) {
+          lines.push(`❌ <@${uid}> - nu pot curata DB: ${e?.message || "eroare"}`);
+          fail++;
+          continue;
+        }
+      }
+
+      lines.push(`❌ <@${uid}> - Unknown Member (nu e in guild) si nu apare ca membru in DB`);
+      fail++;
+      continue;
+    }
+
+  
+
+    const orgId = await resolveOrgForRmvSlash(interaction, ctx, targetMember);
+    if (!orgId) {
+      fail++;
+      lines.push(`❌ <@${uid}> — nu pot determina organizația`);
+      continue;
+    }
+
+    const res = pk
+      ? await applyPk(ctx, targetMember, orgId, ctx.uid)
+      : await removeFromOrg(ctx, targetMember, orgId, ctx.uid);
+
+    if (!res.ok) {
+      fail++;
+      lines.push(`❌ <@${uid}> — ${res.msg || "acțiunea a eșuat"}`);
+      continue;
+    }
+
+    ok++;
+    lines.push(`✅ <@${uid}> — scos${pk ? " + PK" : ""}`);
   }
 
-  const orgId = await resolveOrgForRmvSlash(interaction, ctx, targetMember);
-  if (!orgId) return;
+  const title = pk ? "Remove (BULK + PK)" : "Remove (BULK)";
+  const desc = [
+    `✅ Reușit: **${ok}** • ❌ Eșuat: **${fail}**`,
+    "",
+    compactResultLines(lines, 10),
+    allIds.length >= 30 ? "⚠️ Limită: au fost procesate maxim **30** persoane." : ""
+  ].join("\n");
 
-  const res = pk
-    ? await applyPk(ctx, targetMember, orgId, ctx.uid)
-    : await removeFromOrg(ctx, targetMember, orgId, ctx.uid);
-
-  if (!res.ok) {
-    return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", res.msg || "Acțiunea a eșuat.")] });
-  }
-
-  const org = repo.getOrg(ctx.db, orgId);
-  const title = pk ? "Remove (PK)" : "Membru scos";
-  const extra = pk ? "\nPK aplicat conform regulilor organizației." : "";
-  return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, title, `User: <@${user.id}> | Org: **${org?.name ?? orgId}**${extra}`)] });
+  return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, title, desc)] });
 }
+
 
 export async function handleFmenuCommand(interaction, ctx) {
   return fmenuHome(interaction, ctx);
@@ -712,10 +886,17 @@ export async function handleFmenuComponent(interaction, ctx) {
     if (action === "add") return showModalSafe(interaction, addMembersModal(orgId));
     if (action === "remove") return showModalSafe(interaction, removeMembersModal(orgId, false));
     if (action === "remove_pk") return showModalSafe(interaction, removeMembersModal(orgId, true));
+
     if (action === "roster") {
+      const page = parts[3] ? Number(parts[3]) : 1;
+
+      if (parts[3]) {
+        return rosterView(interaction, ctx, orgId, false, page, true);
+      }
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      return rosterView(interaction, ctx, orgId, true);
+      return rosterView(interaction, ctx, orgId, true, 1, false);
     }
+
     if (action === "search") return showModalSafe(interaction, searchModal(orgId));
     if (action === "setrank") return showModalSafe(interaction, setRankModal(orgId));
   }
@@ -761,23 +942,56 @@ export async function handleFmenuModal(interaction, ctx) {
 
     let ok = 0, bad = 0;
     const errors = [];
-    for (const uid of users) {
-      const m = await ctx.guild.members.fetch(uid).catch((err) => {
-        console.error(`[RMV] fetch member failed for ${uid}:`, err);
-        return null;
-      });
-      if (!m) { bad++; errors.push("Nu pot găsi userul în guild."); continue; }
+      for (const uid of users) {
+        let fetchErr = null;
+        const m = await ctx.guild.members.fetch(uid).catch((err) => {
+          fetchErr = err;
 
-      const res = pk
-        ? await applyPk(ctx, m, orgId, ctx.uid)
-        : await removeFromOrg(ctx, m, orgId, ctx.uid);
+          if (err?.code === 10007) {
+            console.warn(`[RMV] user not in guild (cleanup DB): ${uid}`);
+          } else {
+            console.error(`[RMV] fetch member failed for ${uid}:`, err);
+          }
+          return null;
+        });
 
-      if (res.ok) ok++;
-      else {
-        bad++;
-        if (res.msg) errors.push(res.msg);
+        if (!m) {
+          if (fetchErr?.code === 10007) {
+            try {
+              const mem = repo.getMembership?.(ctx.db, String(uid));
+
+              if (mem && Number(mem.org_id) === Number(orgId)) {
+                repo.removeMembership?.(ctx.db, String(uid));
+                ok++;
+                continue;
+              }
+
+              bad++;
+              errors.push("User nu e in serverul de Discord și nu apare ca membru în această org.");
+              continue;
+            } catch (e) {
+              bad++;
+              errors.push("User nu e in serverul de Discord, dar nu am reușit să curăț DB.");
+              continue;
+            }
+          }
+
+          bad++;
+          errors.push("Nu pot prelua userul.");
+          continue;
+        }
+
+        const res = pk
+          ? await applyPk(ctx, m, orgId, ctx.uid)
+          : await removeFromOrg(ctx, m, orgId, ctx.uid);
+
+        if (res.ok) ok++;
+        else {
+          bad++;
+          if (res.msg) errors.push(res.msg);
+        }
       }
-    }
+
     const note = bad > 0 && errors.length ? `\nMotiv principal: ${errors[0]}` : "";
     const title = pk ? "Rezultat (Remove + PK)" : "Rezultat (Remove)";
     return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, title, `Scoși: **${ok}** | Eșuați: **${bad}**${note}`)] });
