@@ -38,6 +38,25 @@ function yn(v) {
   return v ? "✅" : "❌";
 }
 
+
+function parseRoleIdsRaw(raw) {
+  const ids = String(raw || "")
+    .split(/[\s,]+/g)
+    .map(s => s.replace(/[<@&#>]/g, "").trim())
+    .filter(Boolean);
+  // de-dup + keep order
+  const out = [];
+  for (const id of ids) {
+    if (!/^\d{5,25}$/.test(id)) continue;
+    if (!out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
+function fmtRoleIds(rawOrIds) {
+  const ids = Array.isArray(rawOrIds) ? rawOrIds : parseRoleIdsRaw(rawOrIds);
+  return ids.length ? ids.map(id => `<@&${id}>`).join(", ") : "(unset)";
+}
 function buildWarnEmbed({
   orgName,
   orgRoleId,
@@ -80,8 +99,8 @@ function buildWarnEmbed({
 
 function generateWarnId() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let out = "W-";
-  for (let i = 0; i < 6; i++) {
+  let out = "W";
+  for (let i = 0; i < 4; i++) {
     out += alphabet[Math.floor(Math.random() * alphabet.length)];
   }
   return out;
@@ -100,11 +119,11 @@ function orgCreateModal() {
 function configAccessRolesView(ctx) {
   const emb = makeEmbed("Roluri", "Setează rolurile de acces.");
   const lines = [
-    `Admin: ${ctx.settings.adminRole ? `<@&${ctx.settings.adminRole}>` : "(unset)"}`,
-    `Supervisor: ${ctx.settings.supervisorRole ? `<@&${ctx.settings.supervisorRole}>` : "(unset)"}`,
-    `Config: ${ctx.settings.configRole ? `<@&${ctx.settings.configRole}>` : "(unset)"}`,
-    `PK Role: ${ctx.settings.pkRole ? `<@&${ctx.settings.pkRole}>` : "(unset)"}`,
-    `Ban Role: ${ctx.settings.banRole ? `<@&${ctx.settings.banRole}>` : "(unset)"}`
+    `Admin: ${fmtRoleIds(ctx.settings.adminRole)}`,
+    `Supervisor: ${fmtRoleIds(ctx.settings.supervisorRole)}`,
+    `Config: ${fmtRoleIds(ctx.settings.configRole)}`,
+    `PK Role: ${fmtRoleIds(ctx.settings.pkRole)}`,
+    `Ban Role: ${fmtRoleIds(ctx.settings.banRole)}`
   ];
   emb.setDescription(emb.data.description + "\n\n" + lines.join("\n"));
 
@@ -240,7 +259,7 @@ function setRoleModal(which) {
   };
   const key = map[which];
   return modal(`famenu:setrole_modal:${which}`, "Set Role ID", [
-    input("role_id", "Role ID ", undefined, true, "Ex: 123")
+    input("role_id", "Role ID-uri", undefined, true, "Poți pune 1 sau mai multe (separate prin virgulă/spațiu).")
   ]);
 }
 
@@ -251,7 +270,7 @@ function setChannelModal(which) {
 }
 
 function warnsView(ctx) {
-  const emb = makeEmbed("Warns", "Gestionare warn-uri (Faction-Supervisor/Fondator).");
+  const emb = makeEmbed("Warns", "Gestionare warn-uri.");
   const buttons = [
     btn("famenu:warn_add", "Adaugă warn", ButtonStyle.Primary, "➕"),
     btn("famenu:warn_remove", "Șterge warn", ButtonStyle.Secondary, "🗑️"),
@@ -263,7 +282,7 @@ function warnsView(ctx) {
 
 function cooldownAddModal() {
   return modal("famenu:cooldown_add_modal", "Adaugă cooldown", [
-    input("user_id", "User ID", undefined, true, "Ex: 123 (poți lipi @mention)"),
+    input("user_id", "User ID", undefined, true, "Ex: 123 "),
     input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN"),
     input("duration", "Durată (ex: 30s, 10m, 1d, 1y)", undefined, true, "30s / 10m / 1d")
   ]);
@@ -271,7 +290,7 @@ function cooldownAddModal() {
 
 function cooldownRemoveModal() {
   return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
-    input("user_id", "User ID", undefined, true, "Ex: 123 (poți lipi @mention)"),
+    input("user_id", "User ID", undefined, true, "Ex: 123 "),
     input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
   ]);
 }
@@ -826,14 +845,40 @@ export async function handleFamenuModal(interaction, ctx) {
   if (id.startsWith("famenu:setrole_modal:")) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     const which = id.split(":")[2];
-    const raw = interaction.fields.getTextInputValue("role_id")?.trim();
-    const roleId = raw?.replace(/[<@&#>]/g,"").trim();
-    if (roleId && !roleCheck(ctx, roleId, "rol").ok) return sendEphemeral(interaction, "Eroare", "Role ID invalid.");
-    setSetting(ctx.db, `${which}_role_id`, roleId || "");
+
+    const raw = String(interaction.fields.getTextInputValue("role_id") || "").trim();
+    const ids = parseRoleIdsRaw(raw);
+
+    const multiAllowed = (which === "admin" || which === "supervisor" || which === "config");
+    if (!ids.length) {
+
+      setSetting(ctx.db, `${which}_role_id`, "");
+      const map = { admin: "adminRole", supervisor: "supervisorRole", config: "configRole", pk: "pkRole", ban: "banRole" };
+      const k = map[which];
+      if (k) ctx.settings[k] = null;
+
+      await audit(ctx, "⚙️ Config rol", `**${which}:** —\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+      const view = configAccessRolesView(ctx);
+      return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+    }
+
+    if (!multiAllowed && ids.length > 1) {
+      return sendEphemeral(interaction, "Eroare", "Pentru acest set accept doar UN singur rol.");
+    }
+
+    for (const rid of ids) {
+      const chk = roleCheck(ctx, rid, "rol");
+      if (!chk.ok) return sendEphemeral(interaction, "Eroare", `Role ID invalid: \`${rid}\``);
+    }
+
+    const value = multiAllowed ? ids.join(",") : ids[0];
+    setSetting(ctx.db, `${which}_role_id`, value);
+
     const map = { admin: "adminRole", supervisor: "supervisorRole", config: "configRole", pk: "pkRole", ban: "banRole" };
     const k = map[which];
-    if (k) ctx.settings[k] = roleId || null;
-    await audit(ctx, "⚙️ Config rol", `**${which}:** ${roleId ? `<@&${roleId}>` : "—"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
+    if (k) ctx.settings[k] = value || null;
+
+    await audit(ctx, "⚙️ Config rol", `**${which}:** ${fmtRoleIds(value)}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
     const view = configAccessRolesView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
@@ -1163,7 +1208,8 @@ ${preview}${remaining ? `
     const expiresAt = now() + ms;
     repo.upsertCooldown(ctx.db, userId, kindRaw, expiresAt, null, null);
 
-    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    const roleIdRaw = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    const roleId = parseRoleIdsRaw(roleIdRaw)[0] || null;
     await safeRoleAdd(m, roleId, `[Cooldown ${kindRaw}] manual set via famenu`);
 
     await audit(ctx, "⏳ Cooldown adăugat", [
@@ -1176,7 +1222,8 @@ ${preview}${remaining ? `
     return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Cooldown adăugat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatRel(expiresAt)}`)] });
   }
 
-  if (id === "famenu:cooldown_remove_modal") {
+  
+if (id === "famenu:cooldown_remove_modal") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff pot gestiona cooldown-uri.");
     const userId = interaction.fields.getTextInputValue("user_id")?.replace(/[<@!>]/g,"").trim();
     const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
@@ -1186,21 +1233,39 @@ ${preview}${remaining ? `
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
+    const nowTs = now();
+    const otherKind = kindRaw === "PK" ? "BAN" : "PK";
+
+    const requested = repo.getCooldown(ctx.db, userId, kindRaw);
+    const other = repo.getCooldown(ctx.db, userId, otherKind);
+
+    const isActive = (row) => row && Number(row.expires_at) > nowTs;
+
+    if (!isActive(requested)) {
+      const parts = [
+        `Userul nu are cooldown de **${kindRaw}** activ.`,
+        isActive(other) ? `Are însă cooldown de **${otherKind}** activ (expiră ${formatRel(other.expires_at)}).` : null
+      ].filter(Boolean).join("\n");
+      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", parts, COLORS.WARN)] });
+    }
+
     const m = await ctx.guild.members.fetch(userId).catch(()=>null);
 
     repo.clearCooldown(ctx.db, userId, kindRaw);
 
-    const roleId = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    const roleIdRaw = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
+    const roleId = parseRoleIdsRaw(roleIdRaw)[0] || null;
     if (m && roleId) await safeRoleRemove(m, roleId, `[Cooldown ${kindRaw}] manual remove via famenu`);
 
     await audit(ctx, "🧹 Cooldown șters", [
       `**User:** <@${userId}>`,
       `**Tip:** **${kindRaw}**`,
+      `**Expira:** ${formatRel(requested.expires_at)}`,
       m ? "" : "⚠️ Nu am găsit userul în guild",
       `**De către:** <@${ctx.uid}>`
     ].filter(Boolean).join("\n"), COLORS.SUCCESS);
 
-    return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
+    return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`, COLORS.SUCCESS)] });
   }
 
   return sendEphemeral(interaction, "Eroare", "Modal necunoscut.");
