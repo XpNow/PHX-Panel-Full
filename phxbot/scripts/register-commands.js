@@ -14,11 +14,6 @@ if (!token || !clientId || !guildId) {
   process.exit(1);
 }
 
-/**
- * Adds user options: user (required) + user2..userN (optional).
- * IMPORTANT: Discord requires ALL required options to be placed BEFORE any optional options.
- * Use `afterUser1` to inject other required options (e.g. pk) right after `user` and BEFORE user2..userN.
- */
 function addMultiUserOptions(cmd, max = 8, { afterUser1 } = {}) {
   cmd.addUserOption(o =>
     o.setName("user")
@@ -58,7 +53,6 @@ const cmdAdd = addMultiUserOptions(
   8
 );
 
-// /rmv bulk: user required + pk required + optional users + optional text users
 const cmdRmv = addMultiUserOptions(
   new SlashCommandBuilder()
     .setName("rmv")
