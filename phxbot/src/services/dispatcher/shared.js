@@ -3,7 +3,7 @@ import {
   MessageFlags
 } from "discord.js";
 import { openDb, ensureSchema, getSetting, setSetting, getGlobal, setGlobal } from "../../db/db.js";
-import { isOwner, hasRole } from "../../util/access.js";
+import { isOwner } from "../../util/access.js";
 import { makeEmbed, safeComponents } from "../../ui/ui.js";
 import { COLORS } from "../../ui/theme.js";
 import { enqueueRoleOp } from "../../infra/roleQueue.js";
@@ -39,6 +39,26 @@ export function parseIdSet(envValue) {
   );
 }
 
+export function parseIdList(value) {
+  return Array.from(parseIdSet(value)).filter(s => /^\d{5,25}$/.test(s));
+}
+
+export function memberHasAnyRole(member, idsValue) {
+  if (!member || !member.roles || !member.roles.cache) return false;
+  const ids = parseIdList(idsValue);
+  if (!ids.length) return false;
+  for (const rid of ids) {
+    if (member.roles.cache.has(rid)) return true;
+  }
+  return false;
+}
+
+export function fmtRoleMentions(idsValue) {
+  const ids = parseIdList(idsValue);
+  if (!ids.length) return "(unset)";
+  return ids.map(id => `<@&${id}>`).join(", ");
+}
+
 export function isEnvFamenuAdmin(userId) {
   const set = parseIdSet(process.env.FAMENU_ADMIN_IDS);
   return set.has(String(userId));
@@ -72,9 +92,9 @@ export function getCtx(interaction) {
 
   const perms = {
     owner: isOwner(guild, uid),
-    admin: hasRole(member, settings.adminRole) || envAdmin,
-    supervisor: hasRole(member, settings.supervisorRole),
-    configManager: hasRole(member, settings.configRole) || isEnvFamenuConfig(uid) || envAdmin
+    admin: memberHasAnyRole(member, settings.adminRole) || envAdmin,
+    supervisor: memberHasAnyRole(member, settings.supervisorRole),
+    configManager: memberHasAnyRole(member, settings.configRole) || isEnvFamenuConfig(uid) || envAdmin
   };
   perms.staff = perms.owner || perms.admin || perms.supervisor;
 
