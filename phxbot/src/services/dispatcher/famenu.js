@@ -689,11 +689,13 @@ export async function handleFamenuComponent(interaction, ctx) {
   if (id === "famenu:reconcile_global") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
+    const { members, retryMs, error } = await fetchMembersWithRetry(ctx.guild, "RECONCILE GLOBAL");
     if (!members) {
-      const msg = retryMs > 0
+      const base = retryMs > 0
         ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
         : "Nu pot prelua membrii guild-ului.";
+      const details = error ? `\n\n**Detalii:**\n\`\`\`\n${error}\n\`\`\`` : "";
+      const msg = base + details;
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", msg)] });
     }
     let added = 0;
@@ -721,11 +723,13 @@ export async function handleFamenuComponent(interaction, ctx) {
   if (id === "famenu:reconcile_cooldowns") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "RECONCILE COOLDOWNS");
+    const { members, retryMs, error } = await fetchMembersWithRetry(ctx.guild, "RECONCILE COOLDOWNS");
     if (!members) {
-      const msg = retryMs > 0
+      const base = retryMs > 0
         ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
         : "Nu pot prelua membrii guild-ului.";
+      const details = error ? `\n\n**Detalii:**\n\`\`\`\n${error}\n\`\`\`` : "";
+      const msg = base + details;
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", msg)] });
     }
     const res = await reconcileCooldownRoles(ctx, members);
@@ -849,9 +853,10 @@ export async function handleFamenuModal(interaction, ctx) {
     const raw = String(interaction.fields.getTextInputValue("role_id") || "").trim();
     const ids = parseRoleIdsRaw(raw);
 
+    // admin/supervisor/config pot avea multiple roluri; pk/ban doar 1
     const multiAllowed = (which === "admin" || which === "supervisor" || which === "config");
     if (!ids.length) {
-
+      // allow clearing
       setSetting(ctx.db, `${which}_role_id`, "");
       const map = { admin: "adminRole", supervisor: "supervisorRole", config: "configRole", pk: "pkRole", ban: "banRole" };
       const k = map[which];
@@ -866,6 +871,7 @@ export async function handleFamenuModal(interaction, ctx) {
       return sendEphemeral(interaction, "Eroare", "Pentru acest set accept doar UN singur rol.");
     }
 
+    // validate roles exist
     for (const rid of ids) {
       const chk = roleCheck(ctx, rid, "rol");
       if (!chk.ok) return sendEphemeral(interaction, "Eroare", `Role ID invalid: \`${rid}\``);
@@ -919,11 +925,13 @@ export async function handleFamenuModal(interaction, ctx) {
       });
     }
 
-    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "DELETE ORG");
+    const { members, retryMs, error } = await fetchMembersWithRetry(ctx.guild, "DELETE ORG");
     if (!members) {
-      const msg = retryMs > 0
+      const base = retryMs > 0
         ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
         : "Nu pot prelua membrii guild-ului.";
+      const details = error ? `\n\n**Detalii:**\n\`\`\`\n${error}\n\`\`\`` : "";
+      const msg = base + details;
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", msg)] });
     }
 
@@ -1016,11 +1024,13 @@ ${preview}${remaining ? `
     const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
     if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const { members, retryMs } = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
+    const { members, retryMs, error } = await fetchMembersWithRetry(ctx.guild, "RECONCILE ORG");
     if (!members) {
-      const msg = retryMs > 0
+      const base = retryMs > 0
         ? `Discord rate limit. Încearcă din nou în ~${Math.ceil(retryMs / 1000)}s.`
         : "Nu pot prelua membrii guild-ului.";
+      const details = error ? `\n\n**Detalii:**\n\`\`\`\n${error}\n\`\`\`` : "";
+      const msg = base + details;
       return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", msg)] });
     }
     const res = await reconcileOrg(ctx, orgId, members);
@@ -1222,8 +1232,7 @@ ${preview}${remaining ? `
     return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Cooldown adăugat", `User: <@${userId}> | Tip: **${kindRaw}** | Expiră: ${formatRel(expiresAt)}`)] });
   }
 
-  
-if (id === "famenu:cooldown_remove_modal") {
+  if (id === "famenu:cooldown_remove_modal") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff pot gestiona cooldown-uri.");
     const userId = interaction.fields.getTextInputValue("user_id")?.replace(/[<@!>]/g,"").trim();
     const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
@@ -1232,22 +1241,6 @@ if (id === "famenu:cooldown_remove_modal") {
     if (!["PK","BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Kind invalid. Folosește PK/BAN.");
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    const nowTs = now();
-    const otherKind = kindRaw === "PK" ? "BAN" : "PK";
-
-    const requested = repo.getCooldown(ctx.db, userId, kindRaw);
-    const other = repo.getCooldown(ctx.db, userId, otherKind);
-
-    const isActive = (row) => row && Number(row.expires_at) > nowTs;
-
-    if (!isActive(requested)) {
-      const parts = [
-        `Userul nu are cooldown de **${kindRaw}** activ.`,
-        isActive(other) ? `Are însă cooldown de **${otherKind}** activ (expiră ${formatRel(other.expires_at)}).` : null
-      ].filter(Boolean).join("\n");
-      return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", parts, COLORS.WARN)] });
-    }
 
     const m = await ctx.guild.members.fetch(userId).catch(()=>null);
 
@@ -1260,12 +1253,11 @@ if (id === "famenu:cooldown_remove_modal") {
     await audit(ctx, "🧹 Cooldown șters", [
       `**User:** <@${userId}>`,
       `**Tip:** **${kindRaw}**`,
-      `**Expira:** ${formatRel(requested.expires_at)}`,
       m ? "" : "⚠️ Nu am găsit userul în guild",
       `**De către:** <@${ctx.uid}>`
     ].filter(Boolean).join("\n"), COLORS.SUCCESS);
 
-    return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`, COLORS.SUCCESS)] });
+    return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
   }
 
   return sendEphemeral(interaction, "Eroare", "Modal necunoscut.");
