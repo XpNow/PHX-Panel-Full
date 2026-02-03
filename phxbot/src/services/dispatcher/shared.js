@@ -178,15 +178,38 @@ export function parseDurationMs(input) {
   return mult ? n * mult : null;
 }
 
+function formatFetchMembersError(err) {
+  if (!err) return "Eroare necunoscută";
+
+  const name = err?.name || "Error";
+  const msg = String(err?.message || err).replace(/\s+/g, " ").trim();
+
+  // discord.js rate limit errors often include this shape
+  const retryAfter = Number(
+    err?.data?.retry_after ?? err?.retry_after ?? err?.retryAfter ?? 0
+  );
+  const opcode = err?.data?.opcode;
+  const guildId = err?.data?.meta?.guild_id || err?.payload?.guild_id;
+
+  const parts = [];
+  parts.push(`${name}: ${msg}`);
+  if (Number.isFinite(retryAfter) && retryAfter > 0) parts.push(`retry_after: ${retryAfter}s`);
+  if (opcode !== undefined) parts.push(`opcode: ${opcode}`);
+  if (guildId) parts.push(`guild_id: ${guildId}`);
+
+  // Keep it short for Discord embeds
+  return parts.join(" | ").slice(0, 900);
+}
+
 export async function fetchMembersWithRetry(guild, label) {
   const cached = guildFetchCache.get(guild.id);
   if (cached && (Date.now() - cached.ts) < FULL_FETCH_CACHE_MS) {
-    return { members: cached.members, retryMs: 0, cached: true };
+    return { members: cached.members, retryMs: 0, cached: true, error: null };
   }
   try {
     const members = await guild.members.fetch();
     guildFetchCache.set(guild.id, { ts: Date.now(), members });
-    return { members, retryMs: 0, cached: false };
+    return { members, retryMs: 0, cached: false, error: null };
   } catch (err) {
     const retryMs = Number(err?.retry_after || err?.retryAfter || 0) * 1000;
     if (retryMs > 0) {
@@ -195,14 +218,14 @@ export async function fetchMembersWithRetry(guild, label) {
       try {
         const members = await guild.members.fetch();
         guildFetchCache.set(guild.id, { ts: Date.now(), members });
-        return { members, retryMs, cached: false };
+        return { members, retryMs, cached: false, error: null };
       } catch (retryErr) {
         console.error(`[${label}] fetch members failed after retry:`, retryErr);
-        return { members: null, retryMs, cached: false };
+        return { members: null, retryMs, cached: false, error: formatFetchMembersError(retryErr) };
       }
     }
     console.error(`[${label}] fetch members failed:`, err);
-    return { members: null, retryMs: 0, cached: false };
+    return { members: null, retryMs: 0, cached: false, error: formatFetchMembersError(err) };
   }
 }
 
