@@ -9,6 +9,7 @@ import { AuditLogEvent } from "discord.js";
 
 const PK_MS_DEFAULT = 3 * 24 * 60 * 60 * 1000;
 const BAN_MS_DEFAULT = 30 * 24 * 60 * 60 * 1000;
+const STALE_MEMBERSHIP_DAYS = 14;
 
 function fmtRel(tsMs) {
   return `<t:${Math.floor(Number(tsMs) / 1000)}:R>`;
@@ -133,8 +134,10 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
 
   const pkRows = repo.listCooldowns(db, "PK");
   const banRows = repo.listCooldowns(db, "BAN");
+  const transferRows = repo.listCooldowns(db, "ORG_SWITCH");
   const pkMap = new Map(pkRows.map(r => [String(r.user_id), r]));
   const banMap = new Map(banRows.map(r => [String(r.user_id), r]));
+  const transferMap = new Map(transferRows.map(r => [String(r.user_id), r]));
 
   let pkBackfilled = 0;
   let banBackfilled = 0;
@@ -144,6 +147,9 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
   let banExpiredRemoved = 0;
   let pkEnforced = 0;
   let banEnforced = 0;
+  let transferCleared = 0;
+  let transferEnforced = 0;
+  let transferExpiredRemoved = 0;
 
   const driftLines = [];
 
@@ -151,9 +157,13 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     if (pkRole) {
       const hasRole = m.roles.cache.has(pkRole);
       const row = pkMap.get(m.id) || null;
+      const transferRow = transferMap.get(m.id) || null;
+      const hasTransferCooldown = !!(transferRow && Number(transferRow.expires_at) > now);
+      const activeTransfer = repo.findActiveTransferByUser(db, m.id);
+      const hasOpenTransfer = !!activeTransfer;
 
       if (hasRole) {
-        if (!row) {
+        if (!row && !hasTransferCooldown && !hasOpenTransfer) {
           const expiresAt = now + PK_MS_DEFAULT;
           repo.upsertCooldown(db, m.id, "PK", expiresAt, null, null);
           pkMap.set(m.id, { user_id: m.id, expires_at: expiresAt });
@@ -161,7 +171,7 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           driftLines.push(
             `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(null, now)} → ✅ am creat cooldown în DB (3 zile, expiră ${fmtRel(expiresAt)})`
           );
-        } else if (Number(row.expires_at) <= now) {
+        } else if (row && Number(row.expires_at) <= now) {
           const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:pk:expired:${reason}` });
           pkExpiredRemoved += res?.ok ? 1 : 0;
           repo.clearCooldown(db, m.id, "PK");
@@ -184,6 +194,42 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           driftLines.push(
             `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → 🔁 am încercat să readaug rolul PK • ${fmtOpResult(res)}`
           );
+        }
+      }
+    }
+
+    if (pkRole) {
+      const hasSharedRole = m.roles.cache.has(pkRole);
+      const transferRow = transferMap.get(m.id) || null;
+
+      if (transferRow && Number(transferRow.expires_at) <= now) {
+        const activePk = pkMap.get(m.id) || null;
+        const pkActive = !!(activePk && Number(activePk.expires_at) > now);
+        if (hasSharedRole && !pkActive) {
+          const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:transfer:expired:${reason}` });
+          transferExpiredRemoved += res?.ok ? 1 : 0;
+          driftLines.push(
+            `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(transferRow, now)} → 🧹 am curățat rol transfer expirat • ${fmtOpResult(res)}`
+          );
+        }
+        repo.clearCooldown(db, m.id, "ORG_SWITCH");
+        transferMap.delete(m.id);
+      } else if (transferRow && Number(transferRow.expires_at) > now) {
+        if (!hasSharedRole) {
+          if (acceptRoleRemoval) {
+            repo.clearCooldown(db, m.id, "ORG_SWITCH");
+            transferMap.delete(m.id);
+            transferCleared++;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → ✅ am șters cooldown transfer din DB (accept schimbare făcută offline)`
+            );
+          } else {
+            const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:transfer:enforce:${reason}` });
+            transferEnforced += res?.ok ? 1 : 0;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → 🔁 am încercat să readaug rolul transfer • ${fmtOpResult(res)}`
+            );
+          }
         }
       }
     }
@@ -239,6 +285,9 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     banExpiredRemoved,
     pkEnforced,
     banEnforced,
+    transferCleared,
+    transferEnforced,
+    transferExpiredRemoved,
     driftLines
   };
 }
@@ -309,6 +358,30 @@ async function recoverMembershipsFromDiscord({ db, members, reason }) {
   return { ok: true, upserts, removals, conflicts, driftLines };
 }
 
+async function cleanupStaleMemberships({ db, members, reason }) {
+  const now = Date.now();
+  const cutoff = now - STALE_MEMBERSHIP_DAYS * 24 * 60 * 60 * 1000;
+  const memberIds = new Set(members.map(m => m.id));
+  const memberships = repo.listMemberships(db);
+
+  let cleaned = 0;
+  const lines = [];
+
+  for (const row of memberships) {
+    if (memberIds.has(String(row.user_id))) continue;
+    const presence = repo.getUserPresence(db, row.user_id);
+    const lastLeftAt = Number(presence?.last_left_at || 0);
+    if (!lastLeftAt || lastLeftAt > cutoff) continue;
+
+    repo.removeMembership(db, row.user_id);
+    repo.upsertLastOrgState(db, row.user_id, row.org_id, now, `STALE:${reason}`);
+    cleaned++;
+    lines.push(`• <@${row.user_id}> — org ${row.org_id} (last_left_at ${fmtRel(lastLeftAt)})`);
+  }
+
+  return { ok: true, cleaned, lines };
+}
+
 async function tick({ client, db, reason, acceptRoleRemoval }) {
   const guildId = process.env.DISCORD_GUILD_ID;
   if (!guildId) return;
@@ -324,16 +397,22 @@ async function tick({ client, db, reason, acceptRoleRemoval }) {
 
   const memRes = await recoverMembershipsFromDiscord({ db, members, reason });
   const cdRes = await recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, reason });
+  const staleRes = await cleanupStaleMemberships({ db, members, reason });
 
-if (!doLogs) return;
+  if (!doLogs) return;
 
-const drift = [...(memRes.driftLines || []), ...(cdRes.driftLines || [])];
+  const drift = [
+    ...(memRes.driftLines || []),
+    ...(cdRes.driftLines || []),
+    ...(staleRes.lines || [])
+  ];
 const sample = clipLines(drift, maxSample);
 
-const counters = {
-  memUpserts: memRes.upserts || 0,
-  memRemovals: memRes.removals || 0,
-  memConflicts: memRes.conflicts || 0,
+  const counters = {
+    memUpserts: memRes.upserts || 0,
+    memRemovals: memRes.removals || 0,
+    memConflicts: memRes.conflicts || 0,
+    memStaleCleaned: staleRes.cleaned || 0,
 
   pkBackfilled: cdRes.pkBackfilled || 0,
   pkCleared: cdRes.pkCleared || 0,
@@ -344,6 +423,10 @@ const counters = {
   banCleared: cdRes.banCleared || 0,
   banEnforced: cdRes.banEnforced || 0,
   banExpiredRemoved: cdRes.banExpiredRemoved || 0,
+
+  transferCleared: cdRes.transferCleared || 0,
+  transferEnforced: cdRes.transferEnforced || 0,
+  transferExpiredRemoved: cdRes.transferExpiredRemoved || 0,
 };
 
 const hasNumericChanges = Object.values(counters).some(v => v > 0);
@@ -374,8 +457,9 @@ const policy = acceptRoleRemoval
 
 const summaryParts = [];
 if (counters.memUpserts) summaryParts.push(`Org upsert: ${counters.memUpserts}`);
-if (counters.memRemovals) summaryParts.push(`Org removed: ${counters.memRemovals}`);
-if (counters.memConflicts) summaryParts.push(`Conflicts: ${counters.memConflicts}`);
+  if (counters.memRemovals) summaryParts.push(`Org removed: ${counters.memRemovals}`);
+  if (counters.memConflicts) summaryParts.push(`Conflicts: ${counters.memConflicts}`);
+  if (counters.memStaleCleaned) summaryParts.push(`Stale cleaned: ${counters.memStaleCleaned}`);
 
 if (counters.pkBackfilled) summaryParts.push(`PK backfill: ${counters.pkBackfilled}`);
 if (counters.pkCleared) summaryParts.push(`PK cleared: ${counters.pkCleared}`);
@@ -386,6 +470,9 @@ if (counters.banBackfilled) summaryParts.push(`BAN backfill: ${counters.banBackf
 if (counters.banCleared) summaryParts.push(`BAN cleared: ${counters.banCleared}`);
 if (counters.banEnforced) summaryParts.push(`BAN enforced: ${counters.banEnforced}`);
 if (counters.banExpiredRemoved) summaryParts.push(`BAN expired: ${counters.banExpiredRemoved}`);
+if (counters.transferCleared) summaryParts.push(`TRANSFER cleared: ${counters.transferCleared}`);
+if (counters.transferEnforced) summaryParts.push(`TRANSFER enforced: ${counters.transferEnforced}`);
+if (counters.transferExpiredRemoved) summaryParts.push(`TRANSFER expired: ${counters.transferExpiredRemoved}`);
 
 if (hasDriftDetails) summaryParts.push(`Drift lines: ${drift.length}`);
 
@@ -401,6 +488,7 @@ section(lines, "Organizații (Discord → DB)", [
   { label: "Adăugate/actualizate în DB", value: counters.memUpserts },
   { label: "Șterse din DB (rol lipsă)", value: counters.memRemovals },
   { label: "Conflicte (roluri multiple)", value: counters.memConflicts },
+  { label: "Curățate (stale > 14 zile)", value: counters.memStaleCleaned },
 ]);
 
 section(lines, "Cooldown-uri (Discord ↔ DB)", [
@@ -413,6 +501,10 @@ section(lines, "Cooldown-uri (Discord ↔ DB)", [
   { label: "BAN: DB șterse (rol lipsă)", value: counters.banCleared },
   { label: "BAN: rol readăugat (enforce)", value: counters.banEnforced },
   { label: "BAN: curățate (expirate)", value: counters.banExpiredRemoved },
+
+  { label: "TRANSFER: DB șterse (rol lipsă)", value: counters.transferCleared },
+  { label: "TRANSFER: rol readăugat (enforce)", value: counters.transferEnforced },
+  { label: "TRANSFER: curățate (expirate)", value: counters.transferExpiredRemoved },
 ]);
 
 if (sample) {
