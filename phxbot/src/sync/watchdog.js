@@ -164,7 +164,7 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           driftLines.push(
             `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(null, now)} → ✅ am creat cooldown în DB (3 zile, expiră ${fmtRel(expiresAt)})`
           );
-        } else if (Number(row.expires_at) <= now) {
+        } else if (row && Number(row.expires_at) <= now) {
           const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:pk:expired:${reason}` });
           pkExpiredRemoved += res?.ok ? 1 : 0;
           repo.clearCooldown(db, m.id, "PK");
