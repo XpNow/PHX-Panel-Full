@@ -24,6 +24,7 @@ export function ensureSchema(db) {
     member_role_id TEXT NOT NULL,
     leader_role_id TEXT NOT NULL,
     co_leader_role_id TEXT,
+    member_cap INTEGER,
     created_at INTEGER NOT NULL
   );
   CREATE TABLE IF NOT EXISTS memberships (
@@ -58,6 +59,23 @@ export function ensureSchema(db) {
     payload_json TEXT NOT NULL
   );
   CREATE TABLE IF NOT EXISTS global_state (key TEXT PRIMARY KEY, value TEXT);
+  CREATE TABLE IF NOT EXISTS transfer_requests (
+    request_id TEXT PRIMARY KEY,
+    from_org_id INTEGER NOT NULL,
+    to_org_id INTEGER NOT NULL,
+    user_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    approved_by TEXT,
+    created_at INTEGER NOT NULL,
+    approved_at INTEGER,
+    cooldown_expires_at INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS user_presence (
+    user_id TEXT PRIMARY KEY,
+    last_seen_at INTEGER,
+    last_left_at INTEGER
+  );
   `);
 
   db.exec(`
@@ -66,6 +84,8 @@ export function ensureSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_cooldowns_kind_expires_at ON cooldowns(kind, expires_at);
     CREATE INDEX IF NOT EXISTS idx_warns_status_created_at ON warns(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_warns_status_expires_at ON warns(status, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_transfer_requests_status ON transfer_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_transfer_requests_cooldown ON transfer_requests(cooldown_expires_at);
   `);
 
   function ensureColumn(table, column, ddl) {
@@ -79,6 +99,7 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "leader_role_id", "leader_role_id TEXT NOT NULL DEFAULT ''");
   ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
   ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn("orgs", "member_cap", "member_cap INTEGER");
 
   const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
   if (orgCols.includes("type")) {
