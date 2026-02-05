@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
+import crypto from "crypto";
 import * as repo from "../../db/repo.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, select, modal, input } from "../../ui/ui.js";
@@ -9,6 +10,8 @@ import {
   PK_MS,
   DAY_MS,
   LEGAL_MIN_DAYS,
+  ORG_SWITCH_MS,
+  TRANSFER_MS,
   sendEphemeral,
   makeBrandedEmbed,
   audit,
@@ -26,6 +29,25 @@ import {
 
 const ROSTER_CACHE_MS = 30 * 1000;
 const rosterCache = new Map();
+
+function generateTransferId() {
+  const hex = crypto.randomBytes(3).toString("hex").toUpperCase();
+  return `T-${hex}`;
+}
+
+function effectiveIllegalCap(org) {
+  if (!org) return null;
+  if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
+  const cap = Number(org.member_cap);
+  return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
+}
+
+function countOrgMembers(ctx, org) {
+  const dbCount = repo.listMembersByOrg(ctx.db, org.id).length;
+  const memberRole = org.member_role_id ? ctx.guild.roles.cache.get(org.member_role_id) : null;
+  const discordCount = memberRole ? memberRole.members.filter(m => !m.user?.bot).size : 0;
+  return Math.max(dbCount, discordCount);
+}
 
 function resolveManageableOrgs(ctx) {
   const orgs = repo.listOrgs(ctx.db);
@@ -172,6 +194,8 @@ async function orgPanelView(interaction, ctx, orgId) {
     btn(`org:${orgId}:remove`, "Remove membru", ButtonStyle.Secondary, "➖"),
     btn(`org:${orgId}:roster`, "Roster", ButtonStyle.Secondary, "📋"),
     btn(`org:${orgId}:search`, "Search", ButtonStyle.Secondary, "🔎"),
+    btn(`org:${orgId}:transfer`, "Transfer", ButtonStyle.Secondary, "🔁"),
+    btn(`org:${orgId}:transfers`, "Transfers", ButtonStyle.Secondary, "📨"),
     canSetRanks ? btn(`org:${orgId}:setrank`, "Set rank", ButtonStyle.Secondary, "🪪") : null,
     btn(`fmenu:back`, "Back", ButtonStyle.Secondary, "⬅️"),
   ];
@@ -202,6 +226,20 @@ function setRankModal(orgId) {
   return modal(`org:${orgId}:setrank_modal`, "Setează rank", [
     input("user", "User ID", undefined, true, "Ex: 123..."),
     input("rank", "Rank (MEMBER/LEADER/COLEADER)", undefined, true, "Ex: COLEADER")
+  ]);
+}
+
+function transferRequestModal(orgId) {
+  return modal(`org:${orgId}:transfer_modal`, "Request transfer", [
+    input("user", "User ID", undefined, true, "Ex: 123..."),
+    input("to_org_id", "Org ID destinație", undefined, true, "Ex: 12")
+  ]);
+}
+
+function transferDecisionModal(orgId, action) {
+  const label = action === "approve" ? "Aprobă transfer" : "Respinge transfer";
+  return modal(`org:${orgId}:transfer_${action}_modal`, label, [
+    input("request_id", "Transfer ID", undefined, true, "Ex: T-AB12CD")
   ]);
 }
 
@@ -243,6 +281,11 @@ async function addToOrg(ctx, targetMember, orgId, role) {
     return { ok:false, msg:"Organizația nu există." };
   }
 
+  const activeTransfer = repo.findActiveTransferByUser(ctx.db, targetMember.id);
+  if (activeTransfer) {
+    return { ok:false, msg:"Userul are un transfer în curs. Așteaptă finalizarea înainte de a-l adăuga." };
+  }
+
   const orgs = repo.listOrgs(ctx.db);
   const otherOrgRoles = orgs
     .filter(o => o.id !== org.id && o.member_role_id && targetMember.roles.cache.has(o.member_role_id))
@@ -262,6 +305,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
 
   const pk = repo.getCooldown(ctx.db, targetMember.id, "PK");
   const ban = repo.getCooldown(ctx.db, targetMember.id, "BAN");
+  const orgSwitch = repo.getCooldown(ctx.db, targetMember.id, "ORG_SWITCH");
   if (ban && ban.expires_at > now()) {
     console.error(`[ADD] User ${targetMember.id} blocked by BAN cooldown`);
     return { ok:false, msg:"Userul este banat de la organizații (BAN)."};
@@ -269,6 +313,17 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   if (pk && pk.expires_at > now()) {
     console.error(`[ADD] User ${targetMember.id} blocked by PK cooldown`);
     return { ok:false, msg:"Userul este în cooldown (PK)."};
+  }
+  if (orgSwitch && orgSwitch.expires_at > now()) {
+    return { ok:false, msg:`Userul este în cooldown de transfer (expiră ${formatRel(orgSwitch.expires_at)}).` };
+  }
+
+  const cap = effectiveIllegalCap(org);
+  if (cap) {
+    const current = countOrgMembers(ctx, org);
+    if (current + 1 > cap) {
+      return { ok:false, msg:`Organizația **${org.name}** a atins capul de **${cap}** membri.` };
+    }
   }
 
   if (ctx.settings.pkRole) await safeRoleRemove(targetMember, ctx.settings.pkRole, `Cleanup PK for ${targetMember.id}`);
@@ -288,7 +343,7 @@ async function addToOrg(ctx, targetMember, orgId, role) {
   });
 }
 
-async function removeFromOrg(ctx, targetMember, orgId, byUserId) {
+async function removeFromOrg(ctx, targetMember, orgId, byUserId, { skipOrgSwitch = false } = {}) {
   return withUserLock(targetMember.id, async () => {  const org = repo.getOrg(ctx.db, orgId);
   if (!org) {
     console.error(`[REMOVE] Org not found for orgId ${orgId}`);
@@ -324,6 +379,10 @@ if (ctx.perms.staff) {
   const removed = await safeRoleRemove(targetMember, org.member_role_id, `Remove org role for ${targetMember.id}`);
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   repo.removeMembership(ctx.db, targetMember.id);
+  if (!skipOrgSwitch) {
+    const expiresAt = now() + ORG_SWITCH_MS;
+    repo.upsertCooldown(ctx.db, targetMember.id, "ORG_SWITCH", expiresAt, orgId, now());
+  }
   repo.upsertLastOrgState(ctx.db, targetMember.id, orgId, now(), byUserId);
   await audit(ctx, "🚪 Membru scos", [
     `**Țintă:** <@${targetMember.id}> (\`${targetMember.id}\`)`,
@@ -503,6 +562,140 @@ if (org.leader_role_id) {
   });
 }
 
+async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
+  const org = repo.getOrg(ctx.db, orgId);
+  if (!org) return { ok:false, msg:"Organizația nu există." };
+
+  const toOrg = repo.getOrg(ctx.db, toOrgId);
+  if (!toOrg) return { ok:false, msg:"Organizația destinație nu există." };
+
+  if (!ctx.perms.staff) {
+    const manageable = resolveManageableOrgs(ctx).some(m => m.org.id === orgId);
+    if (!manageable) return { ok:false, msg:"Nu ai permisiuni pentru această organizație." };
+  }
+
+  const member = await ctx.guild.members.fetch(targetMemberId).catch(() => null);
+  if (!member) return { ok:false, msg:"Userul nu este în guild." };
+
+  const activeTransfer = repo.findActiveTransferByUser(ctx.db, targetMemberId);
+  if (activeTransfer) return { ok:false, msg:"Userul are deja un transfer în curs." };
+
+  const membership = repo.getMembership(ctx.db, targetMemberId);
+  if (!membership || String(membership.org_id) !== String(orgId)) {
+    return { ok:false, msg:"Userul nu este membru în organizația ta." };
+  }
+  if (String(toOrgId) === String(orgId)) {
+    return { ok:false, msg:"Organizația destinație trebuie să fie diferită." };
+  }
+
+  const cap = effectiveIllegalCap(toOrg);
+  if (cap) {
+    const current = countOrgMembers(ctx, toOrg);
+    if (current + 1 > cap) {
+      return { ok:false, msg:`Organizația destinație a atins capul de **${cap}** membri.` };
+    }
+  }
+
+  const requestId = generateTransferId();
+  repo.createTransferRequest(ctx.db, {
+    request_id: requestId,
+    from_org_id: orgId,
+    to_org_id: toOrgId,
+    user_id: targetMemberId,
+    status: "PENDING",
+    requested_by: ctx.uid,
+    created_at: now()
+  });
+
+  await audit(ctx, "🔁 Transfer solicitat", [
+    `**Transfer ID:** \`${requestId}\``,
+    `**Țintă:** <@${targetMemberId}> (\`${targetMemberId}\`)`,
+    `**Din:** **${org.name}** (\`${orgId}\`)`,
+    `**Către:** **${toOrg.name}** (\`${toOrgId}\`)`,
+    `**De către:** <@${ctx.uid}>`
+  ].join("\n"), COLORS.GLOBAL);
+
+  return { ok:true, requestId, toOrgName: toOrg.name };
+}
+
+async function processTransferDecision(ctx, orgId, requestId, action) {
+  const req = repo.getTransferRequest(ctx.db, requestId);
+  if (!req) return { ok:false, msg:"Transfer ID invalid." };
+  if (req.status !== "PENDING") return { ok:false, msg:"Transferul nu mai este în așteptare." };
+
+  if (!ctx.perms.staff && String(req.to_org_id) !== String(orgId)) {
+    return { ok:false, msg:"Nu ai permisiuni pentru acest transfer." };
+  }
+
+  const toOrg = repo.getOrg(ctx.db, req.to_org_id);
+  const fromOrg = repo.getOrg(ctx.db, req.from_org_id);
+  if (!toOrg || !fromOrg) return { ok:false, msg:"Organizația din transfer nu există." };
+
+  if (!ctx.perms.staff) {
+    const rank = getOrgRank(ctx.member, toOrg);
+    if (rank !== "LEADER" && rank !== "COLEADER") {
+      return { ok:false, msg:"Nu ai permisiuni de Leader/Co-Leader pentru această organizație." };
+    }
+  }
+
+  if (action === "reject") {
+    repo.updateTransferRequestStatus(ctx.db, requestId, "REJECTED", { approved_by: ctx.uid, approved_at: now() });
+    await audit(ctx, "❌ Transfer respins", [
+      `**Transfer ID:** \`${requestId}\``,
+      `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+      `**Din:** **${fromOrg.name}**`,
+      `**Către:** **${toOrg.name}**`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.ERROR);
+    return { ok:true };
+  }
+
+  const member = await ctx.guild.members.fetch(req.user_id).catch(() => null);
+  if (!member) return { ok:false, msg:"Userul nu este în guild." };
+
+  const cap = effectiveIllegalCap(toOrg);
+  if (cap) {
+    const current = countOrgMembers(ctx, toOrg);
+    if (current + 1 > cap) {
+      return { ok:false, msg:`Organizația destinație a atins capul de **${cap}** membri.` };
+    }
+  }
+
+  const canManage = canManageTargetRank(ctx, fromOrg, member);
+  if (!canManage.ok && !ctx.perms.staff) return { ok:false, msg: canManage.msg };
+
+  const roleIds = [fromOrg.member_role_id, fromOrg.leader_role_id, fromOrg.co_leader_role_id].filter(Boolean);
+  for (const rid of roleIds) {
+    if (member.roles.cache.has(rid)) {
+      const check = roleCheck(ctx, rid, "organizație");
+      if (!check.ok) return { ok:false, msg: check.msg };
+      const removed = await safeRoleRemove(member, rid, `Transfer remove role ${rid} for ${member.id}`);
+      if (!removed) return { ok:false, msg:"Nu pot elimina rolurile organizației (permisiuni lipsă)." };
+    }
+  }
+
+  repo.removeMembership(ctx.db, member.id);
+  repo.upsertLastOrgState(ctx.db, member.id, fromOrg.id, now(), `TRANSFER:${requestId}`);
+
+  const cooldownExpiresAt = now() + TRANSFER_MS;
+  repo.updateTransferRequestStatus(ctx.db, requestId, "APPROVED", {
+    approved_by: ctx.uid,
+    approved_at: now(),
+    cooldown_expires_at: cooldownExpiresAt
+  });
+
+  await audit(ctx, "✅ Transfer aprobat", [
+    `**Transfer ID:** \`${requestId}\``,
+    `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+    `**Din:** **${fromOrg.name}**`,
+    `**Către:** **${toOrg.name}**`,
+    `**Cooldown:** 1h (expiră ${formatRel(cooldownExpiresAt)})`,
+    `**De către:** <@${ctx.uid}>`
+  ].join("\n"), COLORS.SUCCESS);
+
+  return { ok:true };
+}
+
 async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 1, useUpdate = false) {
   const PAGE_SIZE = 25;
 
@@ -664,6 +857,38 @@ async function rosterView(interaction, ctx, orgId, useEditReply = false, page = 
   });
 
   return renderFromLines(title, lines, missingOrgRole);
+}
+
+async function transfersView(interaction, ctx, orgId, useEditReply = false, useUpdate = false) {
+  const org = repo.getOrg(ctx.db, orgId);
+  if (!org) {
+    const emb = makeEmbed("Eroare", "Organizația nu există.");
+    return useUpdate
+      ? interaction.update({ embeds: [emb], components: [] })
+      : (useEditReply
+          ? interaction.editReply({ embeds: [emb], components: [] })
+          : sendEphemeral(interaction, emb.data.title, emb.data.description));
+  }
+
+  const pending = repo.listPendingTransfersForOrg(ctx.db, orgId, 10);
+  const lines = pending.length
+    ? pending.map(t => `• \`${t.request_id}\` — <@${t.user_id}> (din org \`${t.from_org_id}\`)`)
+    : ["Nu există transferuri în așteptare."];
+
+  const emb = makeEmbed(`Transfers — ${org.name}`, lines.join("\n"));
+  const buttons = [
+    btn(`org:${orgId}:transfer_approve`, "Aprobă", ButtonStyle.Success, "✅"),
+    btn(`org:${orgId}:transfer_reject`, "Respinge", ButtonStyle.Danger, "🛑"),
+    btn(`org:${orgId}:back`, "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+
+  if (useUpdate) {
+    return interaction.update({ embeds: [emb], components: rowsFromButtons(buttons) });
+  }
+  if (useEditReply) {
+    return interaction.editReply({ embeds: [emb], components: rowsFromButtons(buttons) });
+  }
+  return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
 }
 
 
@@ -932,6 +1157,13 @@ export async function handleFmenuComponent(interaction, ctx) {
     }
 
     if (action === "search") return showModalSafe(interaction, searchModal(orgId));
+    if (action === "transfer") return showModalSafe(interaction, transferRequestModal(orgId));
+    if (action === "transfers") {
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      return transfersView(interaction, ctx, orgId, true, false);
+    }
+    if (action === "transfer_approve") return showModalSafe(interaction, transferDecisionModal(orgId, "approve"));
+    if (action === "transfer_reject") return showModalSafe(interaction, transferDecisionModal(orgId, "reject"));
     if (action === "setrank") return showModalSafe(interaction, setRankModal(orgId));
   }
 
@@ -1037,6 +1269,35 @@ export async function handleFmenuModal(interaction, ctx) {
     if (!q) return sendEphemeral(interaction, "Eroare", "Query lipsă.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     return searchResult(interaction, ctx, orgId, q);
+  }
+
+  if (id.endsWith(":transfer_modal")) {
+    const orgId = Number(id.split(":")[1]);
+    const user = interaction.fields.getTextInputValue("user")?.trim();
+    const toOrgRaw = interaction.fields.getTextInputValue("to_org_id")?.trim();
+    const uid = user?.replace(/[<@!>]/g, "").trim();
+    const toOrgId = Number(String(toOrgRaw || "").trim());
+    if (!uid || !/^\d{15,25}$/.test(uid)) return sendEphemeral(interaction, "Eroare", "User invalid.");
+    if (!toOrgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const res = await requestTransfer(ctx, orgId, uid, toOrgId);
+    if (!res.ok) return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", res.msg || "Transferul a eșuat.")] });
+    return interaction.editReply({
+      embeds: [makeBrandedEmbed(ctx, "Transfer solicitat", `Transfer ID: \`${res.requestId}\` | Destinație: **${res.toOrgName}**`)]
+    });
+  }
+
+  if (id.endsWith(":transfer_approve_modal") || id.endsWith(":transfer_reject_modal")) {
+    const orgId = Number(id.split(":")[1]);
+    const action = id.includes("approve") ? "approve" : "reject";
+    const requestId = interaction.fields.getTextInputValue("request_id")?.trim().toUpperCase();
+    if (!requestId) return sendEphemeral(interaction, "Eroare", "Transfer ID invalid.");
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const res = await processTransferDecision(ctx, orgId, requestId, action);
+    if (!res.ok) return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", res.msg || "Acțiunea a eșuat.")] });
+    const title = action === "approve" ? "Transfer aprobat" : "Transfer respins";
+    return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, title, `Transfer ID: \`${requestId}\``)] });
   }
 
   if (id.endsWith(":setrank_modal")) {

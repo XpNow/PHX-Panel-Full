@@ -1,4 +1,16 @@
-import { listExpiringCooldowns, listExpiringWarns, setWarnStatus, clearCooldown } from '../db/repo.js';
+import {
+  listExpiringCooldowns,
+  listExpiringWarns,
+  setWarnStatus,
+  clearCooldown,
+  listReadyTransfers,
+  getTransferRequest,
+  updateTransferRequestStatus,
+  getOrg,
+  getMembership,
+  listMembersByOrg,
+  upsertMembership
+} from '../db/repo.js';
 import { getSetting } from '../db/db.js';
 import { EmbedBuilder } from 'discord.js';
 import { COLORS } from '../ui/theme.js';
@@ -32,6 +44,14 @@ function fmtOpResult(res) {
   }
   return `EȘEC (${res.reason || "UNKNOWN"})`;
 }
+
+function effectiveIllegalCap(org) {
+  if (!org) return null;
+  if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
+  const cap = Number(org.member_cap);
+  return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
+}
+
 async function tick({ client, db }) {
   const guildId = process.env.DISCORD_GUILD_ID;
   if (!guildId) return;
@@ -131,6 +151,74 @@ async function tick({ client, db }) {
           setWarnStatus(db, w.warn_id, 'EXPIRED');
         } catch {}
       }
+    }
+  }
+
+  const readyTransfers = listReadyTransfers(db, now, 25);
+  for (const tr of readyTransfers) {
+    const req = getTransferRequest(db, tr.request_id);
+    if (!req || req.status !== "APPROVED") continue;
+
+    const toOrg = getOrg(db, req.to_org_id);
+    const fromOrg = getOrg(db, req.from_org_id);
+    if (!toOrg || !fromOrg) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
+      continue;
+    }
+
+    const member = await guild.members.fetch(req.user_id).catch(() => null);
+    if (!member) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
+      continue;
+    }
+
+    const existing = getMembership(db, req.user_id);
+    if (existing && String(existing.org_id) !== String(toOrg.id)) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
+      continue;
+    }
+
+    const cap = effectiveIllegalCap(toOrg);
+    if (cap) {
+      const dbCount = listMembersByOrg(db, toOrg.id).length;
+      const memberRole = toOrg.member_role_id ? guild.roles.cache.get(toOrg.member_role_id) : null;
+      const discordCount = memberRole ? memberRole.members.filter(m => !m.user?.bot).size : 0;
+      const current = Math.max(dbCount, discordCount);
+      if (current + 1 > cap) {
+        updateTransferRequestStatus(db, req.request_id, "FAILED");
+        continue;
+      }
+    }
+
+    const roleId = toOrg.member_role_id ? String(toOrg.member_role_id) : null;
+    if (!roleId || !guild.roles.cache.get(roleId)) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
+      continue;
+    }
+
+    const res = await enqueueRoleOp({ member, roleId, action: "add", context: "transfer:complete" });
+    if (!res?.ok) {
+      continue;
+    }
+
+    upsertMembership(db, req.user_id, toOrg.id, "MEMBER");
+    updateTransferRequestStatus(db, req.request_id, "COMPLETED");
+
+    if (auditCh && auditCh.isTextBased()) {
+      const descLines = [
+        `**Transfer ID:** \`${req.request_id}\``,
+        `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+        `**Din:** **${fromOrg.name}** (\`${fromOrg.id}\`)`,
+        `**Către:** **${toOrg.name}** (\`${toOrg.id}\`)`,
+        `**Status:** ✅ finalizat`
+      ];
+      const eb = new EmbedBuilder()
+        .setTitle("🔁 Transfer finalizat")
+        .setColor(COLORS.SUCCESS)
+        .setDescription(descLines.join("\n"))
+        .setFooter({ text: `AUTO • ${new Date().toISOString()}` });
+      applyBranding(eb, brandCtx);
+      await auditCh.send({ embeds: [eb] }).catch(() => {});
     }
   }
 }
