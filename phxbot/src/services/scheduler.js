@@ -6,6 +6,7 @@ import {
   listReadyTransfers,
   listPendingTransfers,
   getTransferRequest,
+  getCooldown,
   updateTransferRequestStatus,
   getOrg,
   getMembership,

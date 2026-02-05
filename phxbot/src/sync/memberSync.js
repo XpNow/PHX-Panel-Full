@@ -167,6 +167,24 @@ export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) 
   const orgSwitch = repo.getCooldown(db, member.id, "ORG_SWITCH");
   const orgSwitchActive = !!(orgSwitch && Number(orgSwitch.expires_at) > now);
 
+  if (orgSwitchActive && pkRole && !member.roles.cache.has(pkRole)) {
+    if (_canTouchCooldown(member.id, "ORG_SWITCH", "add")) {
+      const res = await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "cooldown:transfer:enforce" });
+      if (res?.ok) {
+        await audit?.(
+          "🔁 Cooldown sincronizat",
+          [
+            `**Țintă:** <@${member.id}> (\`${member.id}\`)`,
+            `**Tip:** **TRANSFER**`,
+            `**DB:** ✅ activ (expiră ${formatRel(orgSwitch.expires_at)})`,
+            `**Discord:** ❌ rol lipsea → ✅ rol adăugat`,
+            `**Rezultat:** ${fmtOpResult(res)}`
+          ].join("\n")
+        );
+      }
+    }
+  }
+
   const pk = repo.getCooldown(db, member.id, "PK");
   if (pk && pk.expires_at > now && pkRole) {
     if (!member.roles.cache.has(pkRole)) {
