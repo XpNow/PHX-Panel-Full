@@ -30,9 +30,19 @@ import {
 const ROSTER_CACHE_MS = 30 * 1000;
 const rosterCache = new Map();
 
-function generateTransferId() {
-  const hex = crypto.randomBytes(3).toString("hex").toUpperCase();
-  return `T-${hex}`;
+function randomLetters(len = 3) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  let out = "";
+  for (let i = 0; i < len; i++) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return out;
+}
+
+function generateTransferId(ctx) {
+  for (let i = 0; i < 20; i++) {
+    const candidate = randomLetters(3);
+    if (!repo.getTransferRequest(ctx.db, candidate)) return candidate;
+  }
+  return randomLetters(3);
 }
 
 function effectiveIllegalCap(org) {
@@ -239,7 +249,7 @@ function transferRequestModal(orgId) {
 function transferDecisionModal(orgId, action) {
   const label = action === "approve" ? "Aprobă transfer" : "Respinge transfer";
   return modal(`org:${orgId}:transfer_${action}_modal`, label, [
-    input("request_id", "Transfer ID", undefined, true, "Ex: T-AB12CD")
+    input("request_id", "Transfer ID", undefined, true, "Ex: JWY")
   ]);
 }
 
@@ -594,6 +604,10 @@ async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
     return { ok:false, msg:"Organizația destinație trebuie să fie diferită." };
   }
 
+  if (String(org.kind).toUpperCase() !== String(toOrg.kind).toUpperCase()) {
+    return { ok:false, msg:"Transferurile sunt permise doar între organizații de același tip (LEGAL↔LEGAL, ILLEGAL↔ILLEGAL)." };
+  }
+
   const cap = effectiveIllegalCap(toOrg);
   if (cap) {
     const current = countOrgMembers(ctx, toOrg);
@@ -602,7 +616,7 @@ async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
     }
   }
 
-  const requestId = generateTransferId();
+  const requestId = generateTransferId(ctx);
   repo.createTransferRequest(ctx.db, {
     request_id: requestId,
     from_org_id: orgId,
@@ -616,8 +630,8 @@ async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
   await audit(ctx, "🔁 Transfer solicitat", [
     `**Transfer ID:** \`${requestId}\``,
     `**Țintă:** <@${targetMemberId}> (\`${targetMemberId}\`)`,
-    `**Din:** **${org.name}** (\`${orgId}\`)`,
-    `**Către:** **${toOrg.name}** (\`${toOrgId}\`)`,
+    `**Din:** **${org.name}**`,
+    `**Către:** **${toOrg.name}**`,
     `**De către:** <@${ctx.uid}>`
   ].join("\n"), COLORS.GLOBAL);
 
@@ -642,7 +656,7 @@ function resolveOrgByInput(ctx, input) {
   const matches = orgs.filter(o => String(o.name || "").toLowerCase().includes(needle));
   if (matches.length === 1) return { ok: true, org: matches[0] };
   if (matches.length > 1) {
-    const sample = matches.slice(0, 5).map(o => `**${o.name}** (\`${o.id}\`)`).join(", ");
+    const sample = matches.slice(0, 5).map(o => `**${o.name}**`).join(", ");
     return { ok: false, msg: `Am găsit mai multe organizații: ${sample}. Fii mai specific.` };
   }
 
@@ -689,9 +703,6 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
       return { ok:false, msg:`Organizația destinație a atins capul de **${cap}** membri.` };
     }
   }
-
-  const canManage = canManageTargetRank(ctx, fromOrg, member);
-  if (!canManage.ok && !ctx.perms.staff) return { ok:false, msg: canManage.msg };
 
   const roleIds = [fromOrg.member_role_id, fromOrg.leader_role_id, fromOrg.co_leader_role_id].filter(Boolean);
   for (const rid of roleIds) {
@@ -901,7 +912,10 @@ async function transfersView(interaction, ctx, orgId, useEditReply = false, useU
 
   const pending = repo.listPendingTransfersForOrg(ctx.db, orgId, 10);
   const lines = pending.length
-    ? pending.map(t => `• \`${t.request_id}\` — <@${t.user_id}> (din org \`${t.from_org_id}\`)`)
+    ? pending.map(t => {
+        const fromOrg = repo.getOrg(ctx.db, t.from_org_id);
+        return `• \`${t.request_id}\` — <@${t.user_id}> (din **${fromOrg?.name || t.from_org_id}**)`;
+      })
     : ["Nu există transferuri în așteptare."];
 
   const emb = makeEmbed(`Transfers — ${org.name}`, lines.join("\n"));

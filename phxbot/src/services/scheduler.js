@@ -58,8 +58,8 @@ function transferFailAudit(auditCh, brandCtx, req, reason, fromOrg, toOrg) {
   const descLines = [
     `**Transfer ID:** \`${req.request_id}\``,
     `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
-    `**Din:** **${fromOrg?.name ?? req.from_org_id}** (\`${req.from_org_id}\`)`,
-    `**Către:** **${toOrg?.name ?? req.to_org_id}** (\`${req.to_org_id}\`)`,
+    `**Din:** **${fromOrg?.name ?? "—"}**`,
+    `**Către:** **${toOrg?.name ?? "—"}**`,
     `**Status:** ❌ eșuat`,
     `**Motiv:** ${reason}`
   ];
@@ -210,6 +210,12 @@ async function tick({ client, db }) {
       continue;
     }
 
+    if (String(fromOrg.kind).toUpperCase() !== String(toOrg.kind).toUpperCase()) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
+      transferFailAudit(auditCh, brandCtx, req, "Tip organizație incompatibil", fromOrg, toOrg);
+      continue;
+    }
+
     const cap = effectiveIllegalCap(toOrg);
     if (cap) {
       const dbCount = listMembersByOrg(db, toOrg.id).length;
@@ -243,8 +249,8 @@ async function tick({ client, db }) {
       const descLines = [
         `**Transfer ID:** \`${req.request_id}\``,
         `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
-        `**Din:** **${fromOrg.name}** (\`${fromOrg.id}\`)`,
-        `**Către:** **${toOrg.name}** (\`${toOrg.id}\`)`,
+        `**Din:** **${fromOrg.name}**`,
+        `**Către:** **${toOrg.name}**`,
         `**Status:** ✅ finalizat`
       ];
       const eb = new EmbedBuilder()
