@@ -197,6 +197,14 @@ export function listPendingTransfersForOrg(db, toOrgId, limit = 20) {
     LIMIT ?
   `).all(toOrgId, limit);
 }
+export function listPendingTransfers(db, limit = 200) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE status='PENDING'
+    ORDER BY created_at ASC
+    LIMIT ?
+  `).all(limit);
+}
 export function listReadyTransfers(db, nowTs, limit = 50) {
   return db.prepare(`
     SELECT * FROM transfer_requests

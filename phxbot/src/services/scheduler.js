@@ -4,6 +4,7 @@ import {
   setWarnStatus,
   clearCooldown,
   listReadyTransfers,
+  listPendingTransfers,
   getTransferRequest,
   updateTransferRequestStatus,
   getOrg,
@@ -50,6 +51,25 @@ function effectiveIllegalCap(org) {
   if (String(org.kind).toUpperCase() !== "ILLEGAL") return null;
   const cap = Number(org.member_cap);
   return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
+}
+
+function transferFailAudit(auditCh, brandCtx, req, reason, fromOrg, toOrg) {
+  if (!auditCh || !auditCh.isTextBased()) return;
+  const descLines = [
+    `**Transfer ID:** \`${req.request_id}\``,
+    `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+    `**Din:** **${fromOrg?.name ?? req.from_org_id}** (\`${req.from_org_id}\`)`,
+    `**Către:** **${toOrg?.name ?? req.to_org_id}** (\`${req.to_org_id}\`)`,
+    `**Status:** ❌ eșuat`,
+    `**Motiv:** ${reason}`
+  ];
+  const eb = new EmbedBuilder()
+    .setTitle("⚠️ Transfer eșuat")
+    .setColor(COLORS.ERROR)
+    .setDescription(descLines.join("\n"))
+    .setFooter({ text: `AUTO • ${new Date().toISOString()}` });
+  applyBranding(eb, brandCtx);
+  auditCh.send({ embeds: [eb] }).catch(() => {});
 }
 
 async function tick({ client, db }) {
@@ -154,6 +174,15 @@ async function tick({ client, db }) {
     }
   }
 
+  const transferExpiryMs = 24 * 60 * 60 * 1000;
+  const pendingTransfers = listPendingTransfers(db, 200);
+  for (const req of pendingTransfers) {
+    if (!req || req.status !== "PENDING") continue;
+    if (Number(req.created_at) > (now - transferExpiryMs)) continue;
+    updateTransferRequestStatus(db, req.request_id, "EXPIRED");
+    transferFailAudit(auditCh, brandCtx, req, "Expirat (24h)", null, null);
+  }
+
   const readyTransfers = listReadyTransfers(db, now, 25);
   for (const tr of readyTransfers) {
     const req = getTransferRequest(db, tr.request_id);
@@ -163,18 +192,21 @@ async function tick({ client, db }) {
     const fromOrg = getOrg(db, req.from_org_id);
     if (!toOrg || !fromOrg) {
       updateTransferRequestStatus(db, req.request_id, "FAILED");
+      transferFailAudit(auditCh, brandCtx, req, "Org inexistent", fromOrg, toOrg);
       continue;
     }
 
     const member = await guild.members.fetch(req.user_id).catch(() => null);
     if (!member) {
       updateTransferRequestStatus(db, req.request_id, "FAILED");
+      transferFailAudit(auditCh, brandCtx, req, "User nu este în guild", fromOrg, toOrg);
       continue;
     }
 
     const existing = getMembership(db, req.user_id);
     if (existing && String(existing.org_id) !== String(toOrg.id)) {
       updateTransferRequestStatus(db, req.request_id, "FAILED");
+      transferFailAudit(auditCh, brandCtx, req, "User deja în altă organizație", fromOrg, toOrg);
       continue;
     }
 
@@ -186,6 +218,7 @@ async function tick({ client, db }) {
       const current = Math.max(dbCount, discordCount);
       if (current + 1 > cap) {
         updateTransferRequestStatus(db, req.request_id, "FAILED");
+        transferFailAudit(auditCh, brandCtx, req, `Cap atins (${cap})`, fromOrg, toOrg);
         continue;
       }
     }
@@ -193,11 +226,13 @@ async function tick({ client, db }) {
     const roleId = toOrg.member_role_id ? String(toOrg.member_role_id) : null;
     if (!roleId || !guild.roles.cache.get(roleId)) {
       updateTransferRequestStatus(db, req.request_id, "FAILED");
+      transferFailAudit(auditCh, brandCtx, req, "Rol organizație invalid", fromOrg, toOrg);
       continue;
     }
 
     const res = await enqueueRoleOp({ member, roleId, action: "add", context: "transfer:complete" });
     if (!res?.ok) {
+      transferFailAudit(auditCh, brandCtx, req, "Nu pot aplica rolul organizației", fromOrg, toOrg);
       continue;
     }
 
