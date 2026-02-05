@@ -52,6 +52,7 @@ client.on("guildMemberAdd", async (member) => {
   const db = openDb();
   try {
     ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastSeenAt: Date.now(), clearLeft: true });
     const pkRole = getSetting(db, "pk_role_id");
     const banRole = getSetting(db, "ban_role_id");
 
@@ -85,17 +86,30 @@ client.on("guildMemberAdd", async (member) => {
     if (COOLDOWN_REAPPLY_ON_JOIN) {
       const pk = repo.getCooldown(db, member.id, "PK");
       const ban = repo.getCooldown(db, member.id, "BAN");
+      const transferCooldown = repo.getCooldown(db, member.id, "ORG_SWITCH");
       const now = Date.now();
 
-      if (pk && pk.expires_at > now && pkRole) {
-        await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:pk" })
-          .catch((e) => console.error("[guildMemberAdd] failed add pkRole", e));
+      if ((pk && pk.expires_at > now) || (transferCooldown && transferCooldown.expires_at > now)) {
+        if (pkRole) {
+          await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:cooldown" })
+            .catch((e) => console.error("[guildMemberAdd] failed add cooldown role", e));
+        }
       }
       if (ban && ban.expires_at > now && banRole) {
         await enqueueRoleOp({ member, roleId: banRole, action: "add", context: "guildMemberAdd:ban" })
           .catch((e) => console.error("[guildMemberAdd] failed add banRole", e));
       }
     }
+  } finally {
+    db.close();
+  }
+});
+
+client.on("guildMemberRemove", async (member) => {
+  const db = openDb();
+  try {
+    ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastLeftAt: Date.now() });
   } finally {
     db.close();
   }
@@ -152,6 +166,7 @@ client.on("guildMemberUpdate", (oldMember, newMember) => {
     const db = openDb();
     try {
       ensureSchema(db);
+      repo.upsertUserPresence(db, newMember.id, { lastSeenAt: Date.now(), clearLeft: true });
 
       const auditChannelId = getSetting(db, "audit_channel_id");
       const brandText = getSetting(db, "brand_text") || "Phoenix Faction Manager";
