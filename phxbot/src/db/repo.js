@@ -91,7 +91,7 @@ export function getCooldown(db, userId, kind) {
   return db.prepare("SELECT * FROM cooldowns WHERE user_id=? AND kind=?").get(userId, kind);
 }
 export function clearCooldown(db, userId, kind) {
-  db.prepare("DELETE FROM cooldowns WHERE user_id=? AND kind=?").run(userId, kind);
+  return db.prepare("DELETE FROM cooldowns WHERE user_id=? AND kind=?").run(userId, kind);
 }
 export function listCooldowns(db, kind) {
   return db.prepare("SELECT * FROM cooldowns WHERE kind=? ORDER BY expires_at ASC").all(kind);
@@ -228,6 +228,18 @@ export function updateTransferRequestStatus(db, requestId, status, updates = {})
     updates.cooldown_expires_at ?? null,
     requestId
   );
+}
+
+
+export function cancelActiveTransfersByUser(db, userId, cancelledBy = null, cancelledAt = Date.now()) {
+  return db.prepare(`
+    UPDATE transfer_requests
+    SET status='CANCELLED',
+        approved_by=COALESCE(?, approved_by),
+        approved_at=COALESCE(?, approved_at),
+        cooldown_expires_at=COALESCE(cooldown_expires_at, ?)
+    WHERE user_id=? AND status IN ('PENDING','APPROVED')
+  `).run(cancelledBy, cancelledAt, cancelledAt, userId);
 }
 
 export function upsertUserPresence(

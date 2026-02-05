@@ -124,6 +124,19 @@ async function tick({ client, db }) {
         roleAction = "ℹ️ Rol BAN deja lipsă";
         roleResult = "OK (skip)";
       }
+    } else if (cd.kind === 'ORG_SWITCH') {
+      if (pkRole && member.roles.cache.has(pkRole)) {
+        const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "scheduler:transfer:expire" });
+        if (!res?.ok) {
+          console.error(`[SCHEDULER] TRANSFER remove failed for ${cd.user_id}:`, res?.error ?? res);
+          continue;
+        }
+        roleAction = "✅ Rol cooldown transfer eliminat";
+        roleResult = fmtOpResult(res);
+      } else {
+        roleAction = "ℹ️ Rol cooldown transfer deja lipsă";
+        roleResult = "OK (skip)";
+      }
     }
 
     if (auditCh && auditCh.isTextBased()) {

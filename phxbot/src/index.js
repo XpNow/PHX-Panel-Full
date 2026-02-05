@@ -86,11 +86,14 @@ client.on("guildMemberAdd", async (member) => {
     if (COOLDOWN_REAPPLY_ON_JOIN) {
       const pk = repo.getCooldown(db, member.id, "PK");
       const ban = repo.getCooldown(db, member.id, "BAN");
+      const transferCooldown = repo.getCooldown(db, member.id, "ORG_SWITCH");
       const now = Date.now();
 
-      if (pk && pk.expires_at > now && pkRole) {
-        await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:pk" })
-          .catch((e) => console.error("[guildMemberAdd] failed add pkRole", e));
+      if ((pk && pk.expires_at > now) || (transferCooldown && transferCooldown.expires_at > now)) {
+        if (pkRole) {
+          await enqueueRoleOp({ member, roleId: pkRole, action: "add", context: "guildMemberAdd:cooldown" })
+            .catch((e) => console.error("[guildMemberAdd] failed add cooldown role", e));
+        }
       }
       if (ban && ban.expires_at > now && banRole) {
         await enqueueRoleOp({ member, roleId: banRole, action: "add", context: "guildMemberAdd:ban" })
