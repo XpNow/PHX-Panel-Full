@@ -52,6 +52,7 @@ client.on("guildMemberAdd", async (member) => {
   const db = openDb();
   try {
     ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastSeenAt: Date.now(), clearLeft: true });
     const pkRole = getSetting(db, "pk_role_id");
     const banRole = getSetting(db, "ban_role_id");
 
@@ -96,6 +97,16 @@ client.on("guildMemberAdd", async (member) => {
           .catch((e) => console.error("[guildMemberAdd] failed add banRole", e));
       }
     }
+  } finally {
+    db.close();
+  }
+});
+
+client.on("guildMemberRemove", async (member) => {
+  const db = openDb();
+  try {
+    ensureSchema(db);
+    repo.upsertUserPresence(db, member.id, { lastLeftAt: Date.now() });
   } finally {
     db.close();
   }
@@ -152,6 +163,7 @@ client.on("guildMemberUpdate", (oldMember, newMember) => {
     const db = openDb();
     try {
       ensureSchema(db);
+      repo.upsertUserPresence(db, newMember.id, { lastSeenAt: Date.now(), clearLeft: true });
 
       const auditChannelId = getSetting(db, "audit_channel_id");
       const brandText = getSetting(db, "brand_text") || "Phoenix Faction Manager";

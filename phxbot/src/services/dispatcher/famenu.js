@@ -19,6 +19,7 @@ import {
   formatRel,
   parseYesNo,
   parseDurationMs,
+  parseIdList,
   fetchMembersWithRetry,
   roleCheck,
   safeRoleAdd,
@@ -157,16 +158,20 @@ function configIssues(ctx) {
   const roleChecks = [
     ["admin", ctx.settings.adminRole],
     ["supervisor", ctx.settings.supervisorRole],
+    ["config", ctx.settings.configRole],
     ["pk", ctx.settings.pkRole],
     ["ban", ctx.settings.banRole]
   ];
-  for (const [label, id] of roleChecks) {
-    if (!id) {
+  for (const [label, raw] of roleChecks) {
+    const ids = parseIdList(raw);
+    if (!ids.length) {
       issues.push(`Rol ${label}: lipsă`);
       continue;
     }
-    const role = ctx.guild.roles.cache.get(id);
-    if (!role) issues.push(`Rol ${label}: nu a fost găsit`);
+    const missing = ids.filter(id => !ctx.guild.roles.cache.get(id));
+    if (missing.length) {
+      issues.push(`Rol ${label}: lipsesc ${missing.map(id => `\`${id}\``).join(", ")}`);
+    }
   }
 
   return issues;
@@ -236,7 +241,11 @@ async function famenuOrgs(interaction, ctx) {
   const desc = orgs.length
     ? orgs.map(o => {
         const count = o.member_role_id ? (ctx.guild.roles.cache.get(o.member_role_id)?.members.size ?? 0) : 0;
-        return `• **${o.name}** · ${humanKind(o.kind)} · ID: \`${o.id}\` · Membri: **${count}**`;
+        const cap =
+          String(o.kind).toUpperCase() === "ILLEGAL"
+            ? (Number.isFinite(Number(o.member_cap)) ? ` | Cap: **${Number(o.member_cap)}**` : " | Cap: **30** (default)")
+            : "";
+        return `• **${o.name}** · ${humanKind(o.kind)} · ID: \`${o.id}\` · Membri: **${count}**${cap}`;
       }).join("\n")
     : "Nu există organizații încă.";
   const emb = makeEmbed("Organizații", desc);
@@ -244,6 +253,7 @@ async function famenuOrgs(interaction, ctx) {
   const buttons = [
     requireCreateOrg(ctx) ? btn("famenu:createorg", "Create", ButtonStyle.Success, "➕") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:deleteorg", "Delete", ButtonStyle.Danger, "🗑️") : null,
+    requireSupervisorOrOwner(ctx) ? btn("famenu:setorgcap", "Set cap", ButtonStyle.Secondary, "🔢") : null,
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons.filter(Boolean)));
@@ -359,6 +369,13 @@ function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
     input("reason", "Motiv (opțional)", undefined, false, "Ex: desființare")
+  ]);
+}
+
+function setOrgCapModal() {
+  return modal("famenu:setorgcap_modal", "Set org cap", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("cap", "Cap (număr) sau gol pentru reset", undefined, false, "Ex: 30")
   ]);
 }
 function max0(n) { return n < 0 ? 0 : n; }
@@ -672,6 +689,10 @@ export async function handleFamenuComponent(interaction, ctx) {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar Admini pot gestiona cooldown-uri.");
     const view = cooldownsAdminView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:setorgcap") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    return showModalSafe(interaction, setOrgCapModal());
   }
 
   if (id === "famenu:config:roles") {
@@ -1017,6 +1038,36 @@ ${preview}${remaining ? `
     return interaction.editReply({
       embeds: [makeBrandedEmbed(ctx, "Organizație ștearsă", replyDesc)]
     });
+  }
+
+  if (id === "famenu:setorgcap_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
+    const capRaw = interaction.fields.getTextInputValue("cap")?.trim();
+
+    if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Org ID inexistent.");
+
+    let capValue = null;
+    if (capRaw) {
+      const n = Number(capRaw);
+      if (!Number.isFinite(n) || n <= 0) {
+        return sendEphemeral(interaction, "Eroare", "Cap invalid. Folosește un număr > 0 sau lasă gol pentru reset.");
+      }
+      capValue = Math.floor(n);
+    }
+
+    repo.updateOrgMemberCap(ctx.db, orgId, capValue);
+    const capText = capValue ? `**${capValue}**` : "default";
+
+    await audit(ctx, "🔢 Cap actualizat", [
+      `**Org:** **${org.name}** (\`${orgId}\`)`,
+      `**Cap:** ${capText}`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    return sendEphemeral(interaction, "Cap actualizat", `Org: **${org.name}** | Cap: ${capText}`);
   }
 
   if (id === "famenu:reconcile_org_modal") {
