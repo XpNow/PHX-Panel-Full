@@ -152,9 +152,11 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     if (pkRole) {
       const hasRole = m.roles.cache.has(pkRole);
       const row = pkMap.get(m.id) || null;
+      const transferRow = repo.getCooldown(db, m.id, "ORG_SWITCH");
+      const hasTransferCooldown = !!(transferRow && Number(transferRow.expires_at) > now);
 
       if (hasRole) {
-        if (!row) {
+        if (!row && !hasTransferCooldown) {
           const expiresAt = now + PK_MS_DEFAULT;
           repo.upsertCooldown(db, m.id, "PK", expiresAt, null, null);
           pkMap.set(m.id, { user_id: m.id, expires_at: expiresAt });

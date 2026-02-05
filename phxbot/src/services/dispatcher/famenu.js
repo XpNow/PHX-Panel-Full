@@ -610,6 +610,8 @@ async function reconcileCooldownRoles(ctx, members) {
   if (pkRole) {
     const membersWithPk = members.filter(m => m.roles.cache.has(pkRole));
     for (const m of membersWithPk.values()) {
+      const transferCd = repo.getCooldown(ctx.db, m.id, "ORG_SWITCH");
+      if (transferCd && Number(transferCd.expires_at) > nowTs) continue;
       if (!pkMap.has(m.id)) {
         const expiresAt = nowTs + PK_MS;
         repo.upsertCooldown(ctx.db, m.id, "PK", expiresAt, null, nowTs);

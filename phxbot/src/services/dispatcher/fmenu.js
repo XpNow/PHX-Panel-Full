@@ -951,6 +951,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
   const target = await ctx.guild.members.fetch(userId).catch(()=>null);
   const pk = repo.getCooldown(ctx.db, userId, "PK");
   const ban = repo.getCooldown(ctx.db, userId, "BAN");
+  const orgSwitch = repo.getCooldown(ctx.db, userId, "ORG_SWITCH");
   const member = repo.getMembership(ctx.db, userId);
   const last = repo.getLastOrgState(ctx.db, userId);
 
@@ -958,6 +959,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
   lines.push(`User: ${target ? `<@${userId}>` : `\`${userId}\``}`);
   if (ban && ban.expires_at > now()) lines.push(`Status: **BAN** (expiră <t:${Math.floor(ban.expires_at/1000)}:R>)`);
   else if (pk && pk.expires_at > now()) lines.push(`Status: **PK cooldown** (expiră <t:${Math.floor(pk.expires_at/1000)}:R>)`);
+  else if (orgSwitch && orgSwitch.expires_at > now()) lines.push(`Status: **Transfer cooldown** (expiră <t:${Math.floor(orgSwitch.expires_at/1000)}:R>)`);
   else lines.push("Status: **Free**");
   if (member) {
     lines.push(`În organizație: **Da**`);
