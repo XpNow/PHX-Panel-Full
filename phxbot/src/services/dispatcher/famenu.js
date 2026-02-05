@@ -1312,7 +1312,6 @@ ${preview}${remaining ? `
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const m = await ctx.guild.members.fetch(userId).catch(()=>null);
-    const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
 
     if (kindRaw === "ORG_SWITCH") {
       const transferRoleId = parseRoleIdsRaw(ctx.settings.pkRole)[0] || null;
@@ -1322,6 +1321,7 @@ ${preview}${remaining ? `
           return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Nu pot elimina rolul de cooldown transfer. Verifică ierarhia/permisunile botului.")] });
         }
       }
+      const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
       const cancelled = repo.cancelActiveTransfersByUser(ctx.db, userId, ctx.uid, now());
       await audit(ctx, "🧹 Cooldown transfer șters", [
         `**User:** <@${userId}>`,
@@ -1347,6 +1347,8 @@ ${preview}${remaining ? `
         return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", `Nu pot elimina rolul pentru cooldown ${kindRaw}. Verifică ierarhia/permisunile botului.`)] });
       }
     }
+
+    const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
 
     await audit(ctx, "🧹 Cooldown șters", [
       `**User:** <@${userId}>`,

@@ -696,6 +696,19 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
   const member = await ctx.guild.members.fetch(req.user_id).catch(() => null);
   if (!member) return { ok:false, msg:"Userul nu este în guild." };
 
+  const failApprove = async (step, reason, details = "") => {
+    repo.clearCooldown(ctx.db, member.id, "ORG_SWITCH");
+    await audit(ctx, "❌ Transfer eșuat (rollback)", [
+      `**Transfer ID:** \`${requestId}\``,
+      `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
+      `**Pas eșuat:** **${step}**`,
+      `**Motiv:** ${reason}`,
+      details ? `**Detalii:** ${details}` : null,
+      `**De către:** <@${ctx.uid}>`
+    ].filter(Boolean).join("\n"), COLORS.ERROR);
+    return { ok:false, msg:`Transfer eșuat la pasul \`${step}\`: ${reason}` };
+  };
+
   const cap = effectiveIllegalCap(toOrg);
   if (cap) {
     const current = countOrgMembers(ctx, toOrg);
@@ -710,9 +723,8 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
   if (ctx.settings.pkRole) {
     const transferCooldownRoleAdded = await safeRoleAdd(member, ctx.settings.pkRole, `Transfer cooldown role for ${member.id}`);
     if (!transferCooldownRoleAdded) {
-      repo.clearCooldown(ctx.db, member.id, "ORG_SWITCH");
       console.error(`[TRANSFER] Failed to apply cooldown role for ${member.id} on request ${requestId}`);
-      return { ok:false, msg:"Nu pot aplica rolul de cooldown transfer (permisiuni lipsă)." };
+      return failApprove("apply_cooldown_role", "Nu pot aplica rolul de cooldown transfer (permisiuni lipsă).");
     }
   }
 
@@ -720,9 +732,9 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
   for (const rid of roleIds) {
     if (member.roles.cache.has(rid)) {
       const check = roleCheck(ctx, rid, "organizație");
-      if (!check.ok) return { ok:false, msg: check.msg };
+      if (!check.ok) return failApprove("remove_source_roles", check.msg || "Role check failed");
       const removed = await safeRoleRemove(member, rid, `Transfer remove role ${rid} for ${member.id}`);
-      if (!removed) return { ok:false, msg:"Nu pot elimina rolurile organizației (permisiuni lipsă)." };
+      if (!removed) return failApprove("remove_source_roles", "Nu pot elimina rolurile organizației (permisiuni lipsă).", `Role: <@&${rid}>`);
     }
   }
 

@@ -134,8 +134,10 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
 
   const pkRows = repo.listCooldowns(db, "PK");
   const banRows = repo.listCooldowns(db, "BAN");
+  const transferRows = repo.listCooldowns(db, "ORG_SWITCH");
   const pkMap = new Map(pkRows.map(r => [String(r.user_id), r]));
   const banMap = new Map(banRows.map(r => [String(r.user_id), r]));
+  const transferMap = new Map(transferRows.map(r => [String(r.user_id), r]));
 
   let pkBackfilled = 0;
   let banBackfilled = 0;
@@ -145,6 +147,9 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
   let banExpiredRemoved = 0;
   let pkEnforced = 0;
   let banEnforced = 0;
+  let transferCleared = 0;
+  let transferEnforced = 0;
+  let transferExpiredRemoved = 0;
 
   const driftLines = [];
 
@@ -152,7 +157,7 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     if (pkRole) {
       const hasRole = m.roles.cache.has(pkRole);
       const row = pkMap.get(m.id) || null;
-      const transferRow = repo.getCooldown(db, m.id, "ORG_SWITCH");
+      const transferRow = transferMap.get(m.id) || null;
       const hasTransferCooldown = !!(transferRow && Number(transferRow.expires_at) > now);
       const activeTransfer = repo.findActiveTransferByUser(db, m.id);
       const hasOpenTransfer = !!activeTransfer;
@@ -189,6 +194,42 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
           driftLines.push(
             `• <@${m.id}> — **PK** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(row, now)} → 🔁 am încercat să readaug rolul PK • ${fmtOpResult(res)}`
           );
+        }
+      }
+    }
+
+    if (pkRole) {
+      const hasSharedRole = m.roles.cache.has(pkRole);
+      const transferRow = transferMap.get(m.id) || null;
+
+      if (transferRow && Number(transferRow.expires_at) <= now) {
+        const activePk = pkMap.get(m.id) || null;
+        const pkActive = !!(activePk && Number(activePk.expires_at) > now);
+        if (hasSharedRole && !pkActive) {
+          const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "remove", context: `watchdog:transfer:expired:${reason}` });
+          transferExpiredRemoved += res?.ok ? 1 : 0;
+          driftLines.push(
+            `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(true)} | DB: ${fmtDbCooldown(transferRow, now)} → 🧹 am curățat rol transfer expirat • ${fmtOpResult(res)}`
+          );
+        }
+        repo.clearCooldown(db, m.id, "ORG_SWITCH");
+        transferMap.delete(m.id);
+      } else if (transferRow && Number(transferRow.expires_at) > now) {
+        if (!hasSharedRole) {
+          if (acceptRoleRemoval) {
+            repo.clearCooldown(db, m.id, "ORG_SWITCH");
+            transferMap.delete(m.id);
+            transferCleared++;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → ✅ am șters cooldown transfer din DB (accept schimbare făcută offline)`
+            );
+          } else {
+            const res = await enqueueRoleOp({ member: m, roleId: pkRole, action: "add", context: `watchdog:transfer:enforce:${reason}` });
+            transferEnforced += res?.ok ? 1 : 0;
+            driftLines.push(
+              `• <@${m.id}> — **TRANSFER** | Discord: ${fmtRoleState(false)} | DB: ${fmtDbCooldown(transferRow, now)} → 🔁 am încercat să readaug rolul transfer • ${fmtOpResult(res)}`
+            );
+          }
         }
       }
     }
@@ -244,6 +285,9 @@ async function recoverCooldownsFromDiscord({ db, members, acceptRoleRemoval, rea
     banExpiredRemoved,
     pkEnforced,
     banEnforced,
+    transferCleared,
+    transferEnforced,
+    transferExpiredRemoved,
     driftLines
   };
 }
@@ -379,6 +423,10 @@ const sample = clipLines(drift, maxSample);
   banCleared: cdRes.banCleared || 0,
   banEnforced: cdRes.banEnforced || 0,
   banExpiredRemoved: cdRes.banExpiredRemoved || 0,
+
+  transferCleared: cdRes.transferCleared || 0,
+  transferEnforced: cdRes.transferEnforced || 0,
+  transferExpiredRemoved: cdRes.transferExpiredRemoved || 0,
 };
 
 const hasNumericChanges = Object.values(counters).some(v => v > 0);
@@ -422,6 +470,9 @@ if (counters.banBackfilled) summaryParts.push(`BAN backfill: ${counters.banBackf
 if (counters.banCleared) summaryParts.push(`BAN cleared: ${counters.banCleared}`);
 if (counters.banEnforced) summaryParts.push(`BAN enforced: ${counters.banEnforced}`);
 if (counters.banExpiredRemoved) summaryParts.push(`BAN expired: ${counters.banExpiredRemoved}`);
+if (counters.transferCleared) summaryParts.push(`TRANSFER cleared: ${counters.transferCleared}`);
+if (counters.transferEnforced) summaryParts.push(`TRANSFER enforced: ${counters.transferEnforced}`);
+if (counters.transferExpiredRemoved) summaryParts.push(`TRANSFER expired: ${counters.transferExpiredRemoved}`);
 
 if (hasDriftDetails) summaryParts.push(`Drift lines: ${drift.length}`);
 
@@ -450,6 +501,10 @@ section(lines, "Cooldown-uri (Discord ↔ DB)", [
   { label: "BAN: DB șterse (rol lipsă)", value: counters.banCleared },
   { label: "BAN: rol readăugat (enforce)", value: counters.banEnforced },
   { label: "BAN: curățate (expirate)", value: counters.banExpiredRemoved },
+
+  { label: "TRANSFER: DB șterse (rol lipsă)", value: counters.transferCleared },
+  { label: "TRANSFER: rol readăugat (enforce)", value: counters.transferEnforced },
+  { label: "TRANSFER: curățate (expirate)", value: counters.transferExpiredRemoved },
 ]);
 
 if (sample) {

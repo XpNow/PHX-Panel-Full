@@ -266,6 +266,7 @@ async function tick({ client, db }) {
 
     const res = await enqueueRoleOp({ member, roleId, action: "add", context: "transfer:complete" });
     if (!res?.ok) {
+      updateTransferRequestStatus(db, req.request_id, "FAILED");
       transferFailAudit(auditCh, brandCtx, req, "Nu pot aplica rolul organizației", fromOrg, toOrg);
       continue;
     }
