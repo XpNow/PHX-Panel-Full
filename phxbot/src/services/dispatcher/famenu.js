@@ -1315,12 +1315,20 @@ ${preview}${remaining ? `
     const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
 
     if (kindRaw === "ORG_SWITCH") {
+      const transferRoleId = parseRoleIdsRaw(ctx.settings.pkRole)[0] || null;
+      if (m && transferRoleId) {
+        const removedRole = await safeRoleRemove(m, transferRoleId, `[Cooldown TRANSFER] manual remove via famenu`);
+        if (!removedRole) {
+          return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Nu pot elimina rolul de cooldown transfer. Verifică ierarhia/permisunile botului.")] });
+        }
+      }
       const cancelled = repo.cancelActiveTransfersByUser(ctx.db, userId, ctx.uid, now());
       await audit(ctx, "🧹 Cooldown transfer șters", [
         `**User:** <@${userId}>`,
         `**Tip:** **TRANSFER**`,
         `**DB cooldown șters:** **${clearRes?.changes ?? 0}**`,
         `**Transferuri anulate:** **${cancelled?.changes ?? 0}**`,
+        (m && transferRoleId) ? "**Discord role:** ✅ eliminat" : (m ? "**Discord role:** ℹ️ rol transfer neconfigurat" : null),
         m ? "" : "⚠️ Nu am găsit userul în guild",
         `**De către:** <@${ctx.uid}>`
       ].filter(Boolean).join("\n"), COLORS.SUCCESS);
