@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
+import crypto from "crypto";
 import * as repo from "../../db/repo.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, select, modal, input } from "../../ui/ui.js";
