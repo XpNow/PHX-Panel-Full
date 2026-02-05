@@ -164,6 +164,8 @@ export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) 
   const pkRole = getSetting(db, "pk_role_id");
   const banRole = getSetting(db, "ban_role_id");
   const now = Date.now();
+  const orgSwitch = repo.getCooldown(db, member.id, "ORG_SWITCH");
+  const orgSwitchActive = !!(orgSwitch && Number(orgSwitch.expires_at) > now);
 
   const pk = repo.getCooldown(db, member.id, "PK");
   if (pk && pk.expires_at > now && pkRole) {
@@ -198,7 +200,7 @@ export async function enforceCooldownsDbToDiscord({ db, guild, member, audit }) 
     }
   } else {
     const pkExpired = !!(pk && Number(pk.expires_at) <= now);
-    if (pkRole && member.roles.cache.has(pkRole) && (!pk || pkExpired)) {
+    if (pkRole && member.roles.cache.has(pkRole) && (!pk || pkExpired) && !orgSwitchActive) {
       if (_canTouchCooldown(member.id, "PK", "remove")) {
         const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "cooldown:pk:cleanup" });
         if (res?.ok) {
