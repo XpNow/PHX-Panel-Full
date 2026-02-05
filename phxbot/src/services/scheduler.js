@@ -99,14 +99,21 @@ async function tick({ client, db }) {
       roleAction = "User nu este în guild (doar DB curățat)";
       roleResult = "—";
     } else if (cd.kind === 'PK') {
+      const activeTransfer = getCooldown(db, cd.user_id, 'ORG_SWITCH');
+      const transferActive = !!(activeTransfer && Number(activeTransfer.expires_at) > now);
       if (pkRole && member.roles.cache.has(pkRole)) {
-        const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "scheduler:pk:expire" });
-        if (!res?.ok) {
-          console.error(`[SCHEDULER] PK remove failed for ${cd.user_id}:`, res?.error ?? res);
-          continue;
+        if (transferActive) {
+          roleAction = "ℹ️ Rol PK păstrat (există cooldown transfer activ)";
+          roleResult = "OK (skip)";
+        } else {
+          const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "scheduler:pk:expire" });
+          if (!res?.ok) {
+            console.error(`[SCHEDULER] PK remove failed for ${cd.user_id}:`, res?.error ?? res);
+            continue;
+          }
+          roleAction = "✅ Rol PK eliminat";
+          roleResult = fmtOpResult(res);
         }
-        roleAction = "✅ Rol PK eliminat";
-        roleResult = fmtOpResult(res);
       } else {
         roleAction = "ℹ️ Rol PK deja lipsă";
         roleResult = "OK (skip)";
@@ -125,14 +132,21 @@ async function tick({ client, db }) {
         roleResult = "OK (skip)";
       }
     } else if (cd.kind === 'ORG_SWITCH') {
+      const activePk = getCooldown(db, cd.user_id, 'PK');
+      const pkActive = !!(activePk && Number(activePk.expires_at) > now);
       if (pkRole && member.roles.cache.has(pkRole)) {
-        const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "scheduler:transfer:expire" });
-        if (!res?.ok) {
-          console.error(`[SCHEDULER] TRANSFER remove failed for ${cd.user_id}:`, res?.error ?? res);
-          continue;
+        if (pkActive) {
+          roleAction = "ℹ️ Rol cooldown transfer păstrat (există PK activ)";
+          roleResult = "OK (skip)";
+        } else {
+          const res = await enqueueRoleOp({ member, roleId: pkRole, action: "remove", context: "scheduler:transfer:expire" });
+          if (!res?.ok) {
+            console.error(`[SCHEDULER] TRANSFER remove failed for ${cd.user_id}:`, res?.error ?? res);
+            continue;
+          }
+          roleAction = "✅ Rol cooldown transfer eliminat";
+          roleResult = fmtOpResult(res);
         }
-        roleAction = "✅ Rol cooldown transfer eliminat";
-        roleResult = fmtOpResult(res);
       } else {
         roleAction = "ℹ️ Rol cooldown transfer deja lipsă";
         roleResult = "OK (skip)";
