@@ -616,14 +616,6 @@ async function requestTransfer(ctx, orgId, targetMemberId, toOrgId) {
     }
   }
 
-  if (ctx.settings.pkRole) {
-    const transferCooldownRoleAdded = await safeRoleAdd(member, ctx.settings.pkRole, `Transfer cooldown role for ${member.id}`);
-    if (!transferCooldownRoleAdded) {
-      console.error(`[TRANSFER] Failed to apply cooldown role for ${member.id} on request ${requestId}`);
-      return { ok:false, msg:"Nu pot aplica rolul de cooldown transfer (permisiuni lipsă)." };
-    }
-  }
-
   const requestId = generateTransferId(ctx);
   repo.createTransferRequest(ctx.db, {
     request_id: requestId,
@@ -712,9 +704,13 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
     }
   }
 
+  const cooldownExpiresAt = now() + TRANSFER_MS;
+  repo.upsertCooldown(ctx.db, member.id, "ORG_SWITCH", cooldownExpiresAt, fromOrg.id, now());
+
   if (ctx.settings.pkRole) {
     const transferCooldownRoleAdded = await safeRoleAdd(member, ctx.settings.pkRole, `Transfer cooldown role for ${member.id}`);
     if (!transferCooldownRoleAdded) {
+      repo.clearCooldown(ctx.db, member.id, "ORG_SWITCH");
       console.error(`[TRANSFER] Failed to apply cooldown role for ${member.id} on request ${requestId}`);
       return { ok:false, msg:"Nu pot aplica rolul de cooldown transfer (permisiuni lipsă)." };
     }
@@ -732,8 +728,6 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
 
   repo.removeMembership(ctx.db, member.id);
 
-  const cooldownExpiresAt = now() + TRANSFER_MS;
-  repo.upsertCooldown(ctx.db, member.id, "ORG_SWITCH", cooldownExpiresAt, fromOrg.id, now());
   repo.upsertLastOrgState(ctx.db, member.id, fromOrg.id, now(), `TRANSFER:${requestId}`);
   repo.updateTransferRequestStatus(ctx.db, requestId, "APPROVED", {
     approved_by: ctx.uid,
