@@ -102,7 +102,7 @@ async function resolveOrgForAddSlash(interaction, ctx) {
   return null;
 }
 
-async function resolveOrgForRmvSlash(interaction, ctx, targetMember) {
+function resolveOrgForRmvSlash(ctx, targetMember) {
   const orgs = repo.listOrgs(ctx.db);
   const mem = repo.getMembership(ctx.db, String(targetMember.id));
   let orgId = mem?.org_id ? Number(mem.org_id) : null;
@@ -111,33 +111,39 @@ async function resolveOrgForRmvSlash(interaction, ctx, targetMember) {
     const hits = orgs.filter(o => o?.member_role_id && hasRole(targetMember, o.member_role_id));
     if (hits.length === 1) orgId = hits[0].id;
     else if (hits.length > 1) {
-      await interaction.editReply({
-        embeds: [makeBrandedEmbed(ctx, "Eroare", "Userul pare să fie în mai multe organizații (roluri multiple). Folosește **/fmenu** și scoate-l din organizația corectă.")]
-      });
-      return null;
+      return {
+        orgId: null,
+        msg: "Userul pare să fie în mai multe organizații (roluri multiple). Folosește **/fmenu** și scoate-l din organizația corectă."
+      };
     }
   }
 
   if (!orgId) {
-    await interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Userul nu este într-o organizație (nu există membership și nu are rol de organizație).")] });
-    return null;
+    return {
+      orgId: null,
+      msg: "Userul nu este într-o organizație (nu există membership și nu are rol de organizație)."
+    };
   }
 
   const org = repo.getOrg(ctx.db, orgId);
   if (!org) {
-    await interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Organizația userului nu există în DB (posibil configurare ștearsă). Folosește **/famenu** pentru verificare.")] });
-    return null;
+    return {
+      orgId: null,
+      msg: "Organizația userului nu există în DB (posibil configurare ștearsă). Folosește **/famenu** pentru verificare."
+    };
   }
 
   if (!ctx.perms.staff) {
     const manageable = resolveManageableOrgs(ctx).some(m => m.org.id === orgId);
     if (!manageable) {
-      await interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "⛔ Acces refuzat", "Userul nu este în organizația ta. El este în: **" + ((org && org.name) ? org.name : orgId) + "**.") ]});
-      return null;
+      return {
+        orgId: null,
+        msg: `Userul nu este în organizația ta. El este în: **${(org && org.name) ? org.name : orgId}**.`
+      };
     }
   }
 
-  return orgId;
+  return { orgId, msg: null };
 }
 
 async function fetchTargetMember(ctx, userId) {
@@ -1161,16 +1167,16 @@ async function slashRmvCommand(interaction, ctx) {
 
   
 
-    const orgId = await resolveOrgForRmvSlash(interaction, ctx, targetMember);
-    if (!orgId) {
+    const orgRes = resolveOrgForRmvSlash(ctx, targetMember);
+    if (!orgRes.orgId) {
       fail++;
-      lines.push(`❌ <@${uid}> — nu pot determina organizația`);
+      lines.push(`❌ <@${uid}> — ${orgRes.msg || "nu pot determina organizația"}`);
       continue;
     }
 
     const res = pk
-      ? await applyPk(ctx, targetMember, orgId, ctx.uid)
-      : await removeFromOrg(ctx, targetMember, orgId, ctx.uid);
+      ? await applyPk(ctx, targetMember, orgRes.orgId, ctx.uid)
+      : await removeFromOrg(ctx, targetMember, orgRes.orgId, ctx.uid);
 
     if (!res.ok) {
       fail++;
