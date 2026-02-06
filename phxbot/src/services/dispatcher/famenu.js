@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { ButtonStyle, EmbedBuilder, MessageFlags } from "discord.js";
 
-import { setSetting } from "../../db/db.js";
+import { getSetting, setSetting } from "../../db/db.js";
 import * as repo from "../../db/repo.js";
 import { parseUserIds, humanKind } from "../../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, select, modal, input } from "../../ui/ui.js";
@@ -19,6 +19,7 @@ import {
   formatRel,
   parseYesNo,
   parseDurationMs,
+  parseIdList,
   fetchMembersWithRetry,
   roleCheck,
   safeRoleAdd,
@@ -36,6 +37,13 @@ function safe(v) {
 
 function yn(v) {
   return v ? "✅" : "❌";
+}
+
+function normalizeCooldownKind(raw) {
+  const value = String(raw || "").trim().toUpperCase();
+  if (value === "TRANSFER" || value === "ORG_SWITCH" || value === "SWITCH") return "ORG_SWITCH";
+  if (value === "PK" || value === "BAN") return value;
+  return null;
 }
 
 
@@ -157,16 +165,20 @@ function configIssues(ctx) {
   const roleChecks = [
     ["admin", ctx.settings.adminRole],
     ["supervisor", ctx.settings.supervisorRole],
+    ["config", ctx.settings.configRole],
     ["pk", ctx.settings.pkRole],
     ["ban", ctx.settings.banRole]
   ];
-  for (const [label, id] of roleChecks) {
-    if (!id) {
+  for (const [label, raw] of roleChecks) {
+    const ids = parseIdList(raw);
+    if (!ids.length) {
       issues.push(`Rol ${label}: lipsă`);
       continue;
     }
-    const role = ctx.guild.roles.cache.get(id);
-    if (!role) issues.push(`Rol ${label}: nu a fost găsit`);
+    const missing = ids.filter(id => !ctx.guild.roles.cache.get(id));
+    if (missing.length) {
+      issues.push(`Rol ${label}: lipsesc ${missing.map(id => `\`${id}\``).join(", ")}`);
+    }
   }
 
   return issues;
@@ -225,6 +237,7 @@ async function famenuConfig(interaction, ctx) {
   const buttons = [
     btn("famenu:config:roles", "Roluri de acces", ButtonStyle.Secondary, "🔐"),
     btn("famenu:config:channels", "Canale", ButtonStyle.Secondary, "📣"),
+    btn("famenu:config:policies", "Politici cooldown", ButtonStyle.Secondary, "⏱️"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
@@ -236,7 +249,11 @@ async function famenuOrgs(interaction, ctx) {
   const desc = orgs.length
     ? orgs.map(o => {
         const count = o.member_role_id ? (ctx.guild.roles.cache.get(o.member_role_id)?.members.size ?? 0) : 0;
-        return `• **${o.name}** · ${humanKind(o.kind)} · ID: \`${o.id}\` · Membri: **${count}**`;
+        const cap =
+          String(o.kind).toUpperCase() === "ILLEGAL"
+            ? (Number.isFinite(Number(o.member_cap)) ? ` | Cap: **${Number(o.member_cap)}**` : " | Cap: **30** (default)")
+            : "";
+        return `• **${o.name}** · ${humanKind(o.kind)} · ID: \`${o.id}\` · Membri: **${count}**${cap}`;
       }).join("\n")
     : "Nu există organizații încă.";
   const emb = makeEmbed("Organizații", desc);
@@ -244,6 +261,7 @@ async function famenuOrgs(interaction, ctx) {
   const buttons = [
     requireCreateOrg(ctx) ? btn("famenu:createorg", "Create", ButtonStyle.Success, "➕") : null,
     requireSupervisorOrOwner(ctx) ? btn("famenu:deleteorg", "Delete", ButtonStyle.Danger, "🗑️") : null,
+    requireSupervisorOrOwner(ctx) ? btn("famenu:setorgcap", "Set cap", ButtonStyle.Secondary, "🔢") : null,
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons.filter(Boolean)));
@@ -269,6 +287,40 @@ function setChannelModal(which) {
   ]);
 }
 
+function policySettingsView(ctx) {
+  const emb = makeEmbed("Politici cooldown/transfer", "Setează durate și retry-uri.");
+  const transferMs = Number.parseInt(getSetting(ctx.db, "transfer_cooldown_ms") || "", 10) || 60 * 60 * 1000;
+  const switchMs = Number.parseInt(getSetting(ctx.db, "org_switch_cooldown_ms") || "", 10) || 3 * 60 * 60 * 1000;
+  const reqExpMs = Number.parseInt(getSetting(ctx.db, "transfer_request_expiry_ms") || "", 10) || 24 * 60 * 60 * 1000;
+  const retryCount = Number.parseInt(getSetting(ctx.db, "transfer_complete_retry_count") || "", 10) || 2;
+  const retryBackoff = Number.parseInt(getSetting(ctx.db, "transfer_complete_retry_backoff_ms") || "", 10) || 60 * 1000;
+
+  emb.setDescription([
+    emb.data.description,
+    `• Transfer cooldown: **${Math.round(transferMs / 60000)} min**`,
+    `• Remove fără PK cooldown: **${Math.round(switchMs / 60000)} min**`,
+    `• Expirare request transfer: **${Math.round(reqExpMs / 60000)} min**`,
+    `• Retry completare transfer: **${retryCount}**`,
+    `• Backoff retry completare: **${Math.round(retryBackoff / 1000)}s**`
+  ].join("\n"));
+
+  const buttons = [
+    btn("famenu:config:policies:set", "Set policies", ButtonStyle.Secondary, "🛠️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function policySettingsModal() {
+  return modal("famenu:config_policies_modal", "Set politici cooldown/transfer", [
+    input("transfer_cooldown", "Transfer cooldown (ex: 60m, 2h)", undefined, true, "60m"),
+    input("org_switch_cooldown", "Remove fără PK cooldown (ex: 3h)", undefined, true, "3h"),
+    input("request_expiry", "Expirare request transfer (ex: 24h)", undefined, true, "24h"),
+    input("retry_count", "Retry completare transfer (număr)", undefined, true, "2"),
+    input("retry_backoff", "Retry backoff (ex: 60s, 2m)", undefined, true, "60s")
+  ]);
+}
+
 function warnsView(ctx) {
   const emb = makeEmbed("Warns", "Gestionare warn-uri.");
   const buttons = [
@@ -291,7 +343,7 @@ function cooldownAddModal() {
 function cooldownRemoveModal() {
   return modal("famenu:cooldown_remove_modal", "Șterge cooldown", [
     input("user_id", "User ID", undefined, true, "Ex: 123 "),
-    input("kind", "Tip (PK/BAN)", undefined, true, "PK sau BAN")
+    input("kind", "Tip (PK/BAN/TRANSFER)", undefined, true, "PK / BAN / TRANSFER")
   ]);
 }
 
@@ -321,24 +373,31 @@ function cooldownsActiveView(ctx) {
   const nowTs = now();
   const pkRows = repo.listCooldowns(ctx.db, "PK").filter(r => Number(r.expires_at) > nowTs);
   const banRows = repo.listCooldowns(ctx.db, "BAN").filter(r => Number(r.expires_at) > nowTs);
+  const transferRows = repo.listCooldowns(ctx.db, "ORG_SWITCH").filter(r => Number(r.expires_at) > nowTs);
 
-  const fmt = (r) => {
+  const fmt = (r, label = r.kind) => {
     const exp = r.expires_at ? formatRel(r.expires_at) : "—";
-    return `• <@${r.user_id}> — **${r.kind}** • Expiră: ${exp}`;
+    return `• <@${r.user_id}> — **${label}** • Expiră: ${exp}`;
   };
 
   const parts = [];
 
   const pkCap = 20;
   parts.push(`**PK (${pkRows.length})**`);
-  parts.push(pkRows.length ? pkRows.slice(0, pkCap).map(fmt).join("\n") : "—");
+  parts.push(pkRows.length ? pkRows.slice(0, pkCap).map(r => fmt(r, "PK")).join("\n") : "—");
   if (pkRows.length > pkCap) parts.push(`… și încă **${pkRows.length - pkCap}**.`);
 
   const banCap = 20;
   parts.push(`
 **BAN (${banRows.length})**`);
-  parts.push(banRows.length ? banRows.slice(0, banCap).map(fmt).join("\n") : "—");
+  parts.push(banRows.length ? banRows.slice(0, banCap).map(r => fmt(r, "BAN")).join("\n") : "—");
   if (banRows.length > banCap) parts.push(`… și încă **${banRows.length - banCap}**.`);
+
+  const transferCap = 20;
+  parts.push(`
+**TRANSFER (${transferRows.length})**`);
+  parts.push(transferRows.length ? transferRows.slice(0, transferCap).map(r => fmt(r, "TRANSFER")).join("\n") : "—");
+  if (transferRows.length > transferCap) parts.push(`… și încă **${transferRows.length - transferCap}**.`);
 
   const emb = makeEmbed("⏳ Cooldown-uri active", parts.join("\n"));
   const buttons = [
@@ -359,6 +418,13 @@ function deleteOrgModal() {
   return modal("famenu:deleteorg_modal", "Delete organizatie", [
     input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
     input("reason", "Motiv (opțional)", undefined, false, "Ex: desființare")
+  ]);
+}
+
+function setOrgCapModal() {
+  return modal("famenu:setorgcap_modal", "Set org cap", [
+    input("org_id", "Org ID", undefined, true, "ID din lista Organizații"),
+    input("cap", "Cap (număr) sau gol pentru reset", undefined, false, "Ex: 30")
   ]);
 }
 function max0(n) { return n < 0 ? 0 : n; }
@@ -579,6 +645,8 @@ async function reconcileCooldownRoles(ctx, members) {
   if (pkRole) {
     const membersWithPk = members.filter(m => m.roles.cache.has(pkRole));
     for (const m of membersWithPk.values()) {
+      const transferCd = repo.getCooldown(ctx.db, m.id, "ORG_SWITCH");
+      if (transferCd && Number(transferCd.expires_at) > nowTs) continue;
       if (!pkMap.has(m.id)) {
         const expiresAt = nowTs + PK_MS;
         repo.upsertCooldown(ctx.db, m.id, "PK", expiresAt, null, nowTs);
@@ -673,6 +741,10 @@ export async function handleFamenuComponent(interaction, ctx) {
     const view = cooldownsAdminView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
+  if (id === "famenu:setorgcap") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    return showModalSafe(interaction, setOrgCapModal());
+  }
 
   if (id === "famenu:config:roles") {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
@@ -684,6 +756,15 @@ export async function handleFamenuComponent(interaction, ctx) {
     if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
     const view = configChannelsView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:config:policies") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    const view = policySettingsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:config:policies:set") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    return showModalSafe(interaction, policySettingsModal());
   }
 
   if (id === "famenu:reconcile_global") {
@@ -903,6 +984,47 @@ export async function handleFamenuModal(interaction, ctx) {
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 
+  if (id === "famenu:config_policies_modal") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+
+    const transferCdRaw = interaction.fields.getTextInputValue("transfer_cooldown")?.trim();
+    const orgSwitchRaw = interaction.fields.getTextInputValue("org_switch_cooldown")?.trim();
+    const reqExpiryRaw = interaction.fields.getTextInputValue("request_expiry")?.trim();
+    const retryCountRaw = interaction.fields.getTextInputValue("retry_count")?.trim();
+    const retryBackoffRaw = interaction.fields.getTextInputValue("retry_backoff")?.trim();
+
+    const transferMs = parseDurationMs(transferCdRaw);
+    const orgSwitchMs = parseDurationMs(orgSwitchRaw);
+    const reqExpiryMs = parseDurationMs(reqExpiryRaw);
+    const retryCount = Number.parseInt(retryCountRaw || "", 10);
+    const retryBackoffMs = parseDurationMs(retryBackoffRaw);
+
+    if (!transferMs || !orgSwitchMs || !reqExpiryMs || !retryBackoffMs) {
+      return sendEphemeral(interaction, "Eroare", "Durate invalide. Exemple: 60m, 3h, 24h, 60s.");
+    }
+    if (!Number.isFinite(retryCount) || retryCount < 0 || retryCount > 10) {
+      return sendEphemeral(interaction, "Eroare", "Retry count invalid (0..10).");
+    }
+
+    setSetting(ctx.db, "transfer_cooldown_ms", String(transferMs));
+    setSetting(ctx.db, "org_switch_cooldown_ms", String(orgSwitchMs));
+    setSetting(ctx.db, "transfer_request_expiry_ms", String(reqExpiryMs));
+    setSetting(ctx.db, "transfer_complete_retry_count", String(retryCount));
+    setSetting(ctx.db, "transfer_complete_retry_backoff_ms", String(retryBackoffMs));
+
+    await audit(ctx, "⚙️ Config politici cooldown", [
+      `**Transfer cooldown:** ${Math.round(transferMs / 60000)} min`,
+      `**Remove fără PK cooldown:** ${Math.round(orgSwitchMs / 60000)} min`,
+      `**Expirare request transfer:** ${Math.round(reqExpiryMs / 60000)} min`,
+      `**Retry completare transfer:** ${retryCount}`,
+      `**Backoff retry completare:** ${Math.round(retryBackoffMs / 1000)}s`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    const view = policySettingsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+
   if (id === "famenu:deleteorg_modal") {
     if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1017,6 +1139,36 @@ ${preview}${remaining ? `
     return interaction.editReply({
       embeds: [makeBrandedEmbed(ctx, "Organizație ștearsă", replyDesc)]
     });
+  }
+
+  if (id === "famenu:setorgcap_modal") {
+    if (!requireSupervisorOrOwner(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar supervisor/owner.");
+    const orgId = Number(interaction.fields.getTextInputValue("org_id")?.trim());
+    const capRaw = interaction.fields.getTextInputValue("cap")?.trim();
+
+    if (!orgId) return sendEphemeral(interaction, "Eroare", "Org ID invalid.");
+    const org = repo.getOrg(ctx.db, orgId);
+    if (!org) return sendEphemeral(interaction, "Eroare", "Org ID inexistent.");
+
+    let capValue = null;
+    if (capRaw) {
+      const n = Number(capRaw);
+      if (!Number.isFinite(n) || n <= 0) {
+        return sendEphemeral(interaction, "Eroare", "Cap invalid. Folosește un număr > 0 sau lasă gol pentru reset.");
+      }
+      capValue = Math.floor(n);
+    }
+
+    repo.updateOrgMemberCap(ctx.db, orgId, capValue);
+    const capText = capValue ? `**${capValue}**` : "default";
+
+    await audit(ctx, "🔢 Cap actualizat", [
+      `**Org:** **${org.name}** (\`${orgId}\`)`,
+      `**Cap:** ${capText}`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    return sendEphemeral(interaction, "Cap actualizat", `Org: **${org.name}** | Cap: ${capText}`);
   }
 
   if (id === "famenu:reconcile_org_modal") {
@@ -1200,11 +1352,12 @@ ${preview}${remaining ? `
   if (id === "famenu:cooldown_add_modal") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff pot gestiona cooldown-uri.");
     const userId = interaction.fields.getTextInputValue("user_id")?.replace(/[<@!>]/g,"").trim();
-    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
+    const kindInput = interaction.fields.getTextInputValue("kind")?.trim();
+    const kindRaw = normalizeCooldownKind(kindInput);
     const durationRaw = interaction.fields.getTextInputValue("duration")?.trim();
 
     if (!userId || !/^\d{15,25}$/.test(userId)) return sendEphemeral(interaction, "Eroare", "User invalid.");
-    if (!["PK","BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Kind invalid. Folosește PK/BAN.");
+    if (!kindRaw || kindRaw === "ORG_SWITCH") return sendEphemeral(interaction, "Eroare", "Kind invalid pentru adăugare manuală. Folosește PK/BAN.");
     const ms = parseDurationMs(durationRaw);
     if (!ms) return sendEphemeral(interaction, "Eroare", "Durata invalidă. Ex: 3d / 12h / 90d");
     if (!ctx.settings.pkRole && kindRaw === "PK") return sendEphemeral(interaction, "Config lipsă", "PK role nu este setat.");
@@ -1235,30 +1388,64 @@ ${preview}${remaining ? `
   if (id === "famenu:cooldown_remove_modal") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff pot gestiona cooldown-uri.");
     const userId = interaction.fields.getTextInputValue("user_id")?.replace(/[<@!>]/g,"").trim();
-    const kindRaw = interaction.fields.getTextInputValue("kind")?.trim().toUpperCase();
+    const kindInput = interaction.fields.getTextInputValue("kind")?.trim();
+    const kindRaw = normalizeCooldownKind(kindInput);
 
     if (!userId || !/^\d{15,25}$/.test(userId)) return sendEphemeral(interaction, "Eroare", "User invalid.");
-    if (!["PK","BAN"].includes(kindRaw)) return sendEphemeral(interaction, "Eroare", "Kind invalid. Folosește PK/BAN.");
+    if (!kindRaw) return sendEphemeral(interaction, "Eroare", "Kind invalid. Folosește PK/BAN/TRANSFER.");
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     const m = await ctx.guild.members.fetch(userId).catch(()=>null);
 
-    repo.clearCooldown(ctx.db, userId, kindRaw);
+    if (kindRaw === "ORG_SWITCH") {
+      const transferRoleId = parseRoleIdsRaw(ctx.settings.pkRole)[0] || null;
+      if (m && transferRoleId) {
+        const removedRole = await safeRoleRemove(m, transferRoleId, `[Cooldown TRANSFER] manual remove via famenu`);
+        if (!removedRole) {
+          return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", "Nu pot elimina rolul de cooldown transfer. Verifică ierarhia/permisunile botului.")] });
+        }
+      }
+      const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
+      const cancelled = repo.cancelActiveTransfersByUser(ctx.db, userId, ctx.uid, now());
+      await audit(ctx, "🧹 Cooldown transfer șters", [
+        `**User:** <@${userId}>`,
+        `**Tip:** **TRANSFER**`,
+        `**DB cooldown șters:** **${clearRes?.changes ?? 0}**`,
+        `**Transferuri anulate:** **${cancelled?.changes ?? 0}**`,
+        (m && transferRoleId) ? "**Discord role:** ✅ eliminat" : (m ? "**Discord role:** ℹ️ rol transfer neconfigurat" : null),
+        m ? "" : "⚠️ Nu am găsit userul în guild",
+        `**De către:** <@${ctx.uid}>`
+      ].filter(Boolean).join("\n"), COLORS.SUCCESS);
+      return sendEphemeral(
+        interaction,
+        "Cooldown transfer șters",
+        `User: <@${userId}> | Cooldown transfer eliminat.${(cancelled?.changes ?? 0) > 0 ? " Transferul activ a fost anulat." : ""}`
+      );
+    }
 
     const roleIdRaw = kindRaw === "PK" ? ctx.settings.pkRole : ctx.settings.banRole;
     const roleId = parseRoleIdsRaw(roleIdRaw)[0] || null;
-    if (m && roleId) await safeRoleRemove(m, roleId, `[Cooldown ${kindRaw}] manual remove via famenu`);
+    if (m && roleId) {
+      const removedRole = await safeRoleRemove(m, roleId, `[Cooldown ${kindRaw}] manual remove via famenu`);
+      if (!removedRole) {
+        return interaction.editReply({ embeds: [makeBrandedEmbed(ctx, "Eroare", `Nu pot elimina rolul pentru cooldown ${kindRaw}. Verifică ierarhia/permisunile botului.`)] });
+      }
+    }
+
+    const clearRes = repo.clearCooldown(ctx.db, userId, kindRaw);
 
     await audit(ctx, "🧹 Cooldown șters", [
       `**User:** <@${userId}>`,
       `**Tip:** **${kindRaw}**`,
+      `**DB cooldown șters:** **${clearRes?.changes ?? 0}**`,
       m ? "" : "⚠️ Nu am găsit userul în guild",
       `**De către:** <@${ctx.uid}>`
     ].filter(Boolean).join("\n"), COLORS.SUCCESS);
 
     return sendEphemeral(interaction, "Cooldown șters", `User: <@${userId}> | Tip: **${kindRaw}**`);
   }
+
 
   return sendEphemeral(interaction, "Eroare", "Modal necunoscut.");
 }
