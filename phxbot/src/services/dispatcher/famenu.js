@@ -181,6 +181,37 @@ function configIssues(ctx) {
     }
   }
 
+  const botMember = ctx.guild.members.me;
+  if (!botMember) {
+    issues.push("Bot member: nu pot valida ierarhia rolurilor");
+    return issues;
+  }
+
+  const managedRoleChecks = [
+    ["pk", parseIdList(ctx.settings.pkRole)],
+    ["ban", parseIdList(ctx.settings.banRole)]
+  ];
+  for (const [label, ids] of managedRoleChecks) {
+    for (const rid of ids) {
+      const role = ctx.guild.roles.cache.get(rid);
+      if (!role) continue;
+      if (botMember.roles.highest.position <= role.position) {
+        issues.push(`Ierarhie ${label}: botul nu poate gestiona rolul <@&${rid}>`);
+      }
+    }
+  }
+
+  for (const org of repo.listOrgs(ctx.db)) {
+    const ids = [org.member_role_id, org.leader_role_id, org.co_leader_role_id].filter(Boolean);
+    for (const rid of ids) {
+      const role = ctx.guild.roles.cache.get(rid);
+      if (!role) continue;
+      if (botMember.roles.highest.position <= role.position) {
+        issues.push(`Ierarhie org ${org.name}: botul nu poate gestiona <@&${rid}>`);
+      }
+    }
+  }
+
   return issues;
 }
 

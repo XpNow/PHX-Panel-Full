@@ -975,6 +975,8 @@ async function searchResult(interaction, ctx, orgId, userId) {
   const pk = repo.getCooldown(ctx.db, userId, "PK");
   const ban = repo.getCooldown(ctx.db, userId, "BAN");
   const orgSwitch = repo.getCooldown(ctx.db, userId, "ORG_SWITCH");
+  const transfers = repo.listTransfersByUser(ctx.db, userId, 3);
+  const activeTransfer = transfers.find(t => t.status === "PENDING" || t.status === "APPROVED") || null;
   const member = repo.getMembership(ctx.db, userId);
   const last = repo.getLastOrgState(ctx.db, userId);
 
@@ -984,6 +986,7 @@ async function searchResult(interaction, ctx, orgId, userId) {
   else if (pk && pk.expires_at > now()) lines.push(`Status: **PK cooldown** (expiră <t:${Math.floor(pk.expires_at/1000)}:R>)`);
   else if (orgSwitch && orgSwitch.expires_at > now()) lines.push(`Status: **Transfer cooldown** (expiră <t:${Math.floor(orgSwitch.expires_at/1000)}:R>)`);
   else lines.push("Status: **Free**");
+  if (activeTransfer) lines.push(`Transfer activ: **${activeTransfer.status}** (ID: \`${activeTransfer.request_id}\`)`);
   if (member) {
     lines.push(`În organizație: **Da**`);
   } else {
@@ -1006,6 +1009,14 @@ async function searchResult(interaction, ctx, orgId, userId) {
     }
     if (last?.last_removed_by) {
       lines.push(`Scos de: <@${last.last_removed_by}>`);
+    }
+    if (transfers.length) {
+      lines.push("Istoric transfer (ultimele 3):");
+      for (const t of transfers) {
+        const from = repo.getOrg(ctx.db, t.from_org_id)?.name ?? t.from_org_id;
+        const to = repo.getOrg(ctx.db, t.to_org_id)?.name ?? t.to_org_id;
+        lines.push(`• \`${t.request_id}\` — ${from} → ${to} | **${t.status}**`);
+      }
     }
   }
 

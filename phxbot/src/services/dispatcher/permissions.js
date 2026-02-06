@@ -17,6 +17,8 @@ export async function handlePermissionsCommand(interaction, ctx) {
 
   const canFamenu = ctx.perms.staff || ctx.perms.configManager;
   const canFmenu = orgLines.length > 0 || ctx.perms.staff;
+  const whyFamenu = canFamenu ? "OK" : "Necesită owner/admin/supervisor/config role";
+  const whyFmenu = canFmenu ? "OK" : "Necesită rol Leader/Co-Leader într-o org sau staff";
 
   const descLines = [
     `**Admin roles:** ${fmtRoleMentions(ctx.settings.adminRole)}`,
@@ -31,7 +33,9 @@ export async function handlePermissionsCommand(interaction, ctx) {
     `**Config manager:** ${formatBool(ctx.perms.configManager)}`,
     "—",
     `**/famenu:** ${formatBool(canFamenu)}`,
+    `• motiv: ${whyFamenu}`,
     `**/fmenu /add /rmv:** ${formatBool(canFmenu)}`,
+    `• motiv: ${whyFmenu}`,
     "—",
     orgLines.length ? `**Org roles:**\n${orgLines.join("\n")}` : "**Org roles:** —"
   ];

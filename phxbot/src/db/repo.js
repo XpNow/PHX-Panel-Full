@@ -189,6 +189,14 @@ export function findActiveTransferByUser(db, userId) {
     LIMIT 1
   `).get(userId);
 }
+export function listTransfersByUser(db, userId, limit = 10) {
+  return db.prepare(`
+    SELECT * FROM transfer_requests
+    WHERE user_id=?
+    ORDER BY created_at DESC
+    LIMIT ?
+  `).all(userId, limit);
+}
 export function listPendingTransfersForOrg(db, toOrgId, limit = 20) {
   return db.prepare(`
     SELECT * FROM transfer_requests

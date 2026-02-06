@@ -1,4 +1,4 @@
-import { getSetting } from "../db/db.js";
+import { getGlobal, getSetting } from "../db/db.js";
 import * as repo from "../db/repo.js";
 import { enqueueRoleOp } from "../infra/roleQueue.js";
 import { COLORS } from "../ui/theme.js";
@@ -383,6 +383,12 @@ async function cleanupStaleMemberships({ db, members, reason }) {
 }
 
 async function tick({ client, db, reason, acceptRoleRemoval }) {
+  const schemaVersion = Number(getGlobal(db, "schema_version") || 0);
+  if (schemaVersion < 2) {
+    console.warn(`[WATCHDOG] schema_version=${schemaVersion} too old, skipping watchdog tick`);
+    return;
+  }
+
   const guildId = process.env.DISCORD_GUILD_ID;
   if (!guildId) return;
 

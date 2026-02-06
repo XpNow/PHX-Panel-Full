@@ -127,6 +127,8 @@ export function ensureSchema(db) {
   ];
   const upsert = db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)");
   for (const [k,v] of defaults) upsert.run(k,v);
+
+  db.prepare("INSERT OR IGNORE INTO global_state(key,value) VALUES(?,?)").run("schema_version", "2");
 }
 
 export function getSetting(db, key) {

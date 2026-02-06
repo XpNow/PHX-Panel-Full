@@ -79,6 +79,16 @@ function transferFailAudit(auditCh, brandCtx, req, reason, fromOrg, toOrg) {
   auditCh.send({ embeds: [eb] }).catch(() => {});
 }
 
+const _transferAuditDedup = new Map();
+function shouldSendTransferFailAudit(reqId, reason, windowMs = 2 * 60 * 1000) {
+  const key = `${reqId}:${reason}`;
+  const ts = _transferAuditDedup.get(key) || 0;
+  const now = Date.now();
+  if (now - ts < windowMs) return false;
+  _transferAuditDedup.set(key, now);
+  return true;
+}
+
 async function tick({ client, db }) {
   const guildId = process.env.DISCORD_GUILD_ID;
   if (!guildId) return;
@@ -280,7 +290,10 @@ async function tick({ client, db }) {
         updateTransferRequestStatus(db, req.request_id, "APPROVED", {
           cooldown_expires_at: now + transferRetryBackoffMs
         });
-        transferFailAudit(auditCh, brandCtx, req, `Retry ${retries + 1}/${transferRetryCount} în ${Math.round(transferRetryBackoffMs / 1000)}s`, fromOrg, toOrg);
+        const retryReason = `Retry ${retries + 1}/${transferRetryCount} în ${Math.round(transferRetryBackoffMs / 1000)}s`;
+        if (shouldSendTransferFailAudit(req.request_id, retryReason)) {
+          transferFailAudit(auditCh, brandCtx, req, retryReason, fromOrg, toOrg);
+        }
       } else {
         updateTransferRequestStatus(db, req.request_id, "FAILED");
         transferFailAudit(auditCh, brandCtx, req, "Nu pot aplica rolul organizației (retry epuizat)", fromOrg, toOrg);
