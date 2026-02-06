@@ -1,6 +1,7 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
 import crypto from "crypto";
 import * as repo from "../../db/repo.js";
+import { getSetting } from "../../db/db.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, select, modal, input } from "../../ui/ui.js";
 import { COLORS } from "../../ui/theme.js";
@@ -26,6 +27,16 @@ import {
   showModalSafe,
   fetchMembersWithRetry
 } from "./shared.js";
+
+function transferCooldownMs(ctx) {
+  const raw = Number(getSetting(ctx.db, "transfer_cooldown_ms"));
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : (60 * 60 * 1000);
+}
+
+function orgSwitchCooldownMs(ctx) {
+  const raw = Number(getSetting(ctx.db, "org_switch_cooldown_ms"));
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : (3 * 60 * 60 * 1000);
+}
 
 const ROSTER_CACHE_MS = 30 * 1000;
 const rosterCache = new Map();
@@ -390,7 +401,7 @@ if (ctx.perms.staff) {
   if (!removed) return { ok:false, msg:"Nu pot elimina rolul organizației (permisiuni lipsă)." };
   repo.removeMembership(ctx.db, targetMember.id);
   if (!skipOrgSwitch) {
-    const expiresAt = now() + ORG_SWITCH_MS;
+    const expiresAt = now() + orgSwitchCooldownMs(ctx);
     repo.upsertCooldown(ctx.db, targetMember.id, "ORG_SWITCH", expiresAt, orgId, now());
   }
   repo.upsertLastOrgState(ctx.db, targetMember.id, orgId, now(), byUserId);
@@ -717,7 +728,7 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
     }
   }
 
-  const cooldownExpiresAt = now() + TRANSFER_MS;
+  const cooldownExpiresAt = now() + transferCooldownMs(ctx);
   repo.upsertCooldown(ctx.db, member.id, "ORG_SWITCH", cooldownExpiresAt, fromOrg.id, now());
 
   if (ctx.settings.pkRole) {

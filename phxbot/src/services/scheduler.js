@@ -8,6 +8,7 @@ import {
   getTransferRequest,
   getCooldown,
   updateTransferRequestStatus,
+  incrementTransferRetryCount,
   getOrg,
   getMembership,
   listMembersByOrg,
@@ -54,6 +55,11 @@ function effectiveIllegalCap(org) {
   return Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : 30;
 }
 
+function settingNumber(db, key, fallback) {
+  const raw = Number(getSetting(db, key));
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : fallback;
+}
+
 function transferFailAudit(auditCh, brandCtx, req, reason, fromOrg, toOrg) {
   if (!auditCh || !auditCh.isTextBased()) return;
   const descLines = [
@@ -80,6 +86,9 @@ async function tick({ client, db }) {
   if (!guild) return;
 
   const now = Date.now();
+  const transferExpiryMs = settingNumber(db, "transfer_request_expiry_ms", 24 * 60 * 60 * 1000);
+  const transferRetryCount = settingNumber(db, "transfer_complete_retry_count", 2);
+  const transferRetryBackoffMs = settingNumber(db, "transfer_complete_retry_backoff_ms", 60 * 1000);
   const expCooldowns = listExpiringCooldowns(db, now);
 
   const pkRole = getSetting(db, 'pk_role_id');
@@ -202,7 +211,6 @@ async function tick({ client, db }) {
     }
   }
 
-  const transferExpiryMs = 24 * 60 * 60 * 1000;
   const pendingTransfers = listPendingTransfers(db, 200);
   for (const req of pendingTransfers) {
     if (!req || req.status !== "PENDING") continue;
@@ -266,8 +274,17 @@ async function tick({ client, db }) {
 
     const res = await enqueueRoleOp({ member, roleId, action: "add", context: "transfer:complete" });
     if (!res?.ok) {
-      updateTransferRequestStatus(db, req.request_id, "FAILED");
-      transferFailAudit(auditCh, brandCtx, req, "Nu pot aplica rolul organizației", fromOrg, toOrg);
+      const retries = Number(req.retry_count || 0);
+      if (retries < transferRetryCount) {
+        incrementTransferRetryCount(db, req.request_id);
+        updateTransferRequestStatus(db, req.request_id, "APPROVED", {
+          cooldown_expires_at: now + transferRetryBackoffMs
+        });
+        transferFailAudit(auditCh, brandCtx, req, `Retry ${retries + 1}/${transferRetryCount} în ${Math.round(transferRetryBackoffMs / 1000)}s`, fromOrg, toOrg);
+      } else {
+        updateTransferRequestStatus(db, req.request_id, "FAILED");
+        transferFailAudit(auditCh, brandCtx, req, "Nu pot aplica rolul organizației (retry epuizat)", fromOrg, toOrg);
+      }
       continue;
     }
 

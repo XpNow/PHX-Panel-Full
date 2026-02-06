@@ -219,15 +219,25 @@ export function updateTransferRequestStatus(db, requestId, status, updates = {})
     SET status=?,
         approved_by=COALESCE(?, approved_by),
         approved_at=COALESCE(?, approved_at),
-        cooldown_expires_at=COALESCE(?, cooldown_expires_at)
+        cooldown_expires_at=COALESCE(?, cooldown_expires_at),
+        retry_count=COALESCE(?, retry_count)
     WHERE request_id=?
   `).run(
     status,
     updates.approved_by ?? null,
     updates.approved_at ?? null,
     updates.cooldown_expires_at ?? null,
+    updates.retry_count ?? null,
     requestId
   );
+}
+
+export function incrementTransferRetryCount(db, requestId) {
+  return db.prepare(`
+    UPDATE transfer_requests
+    SET retry_count = COALESCE(retry_count, 0) + 1
+    WHERE request_id=?
+  `).run(requestId);
 }
 
 

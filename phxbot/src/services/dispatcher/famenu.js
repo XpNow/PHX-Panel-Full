@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import { ButtonStyle, EmbedBuilder, MessageFlags } from "discord.js";
 
-import { setSetting } from "../../db/db.js";
+import { getSetting, setSetting } from "../../db/db.js";
 import * as repo from "../../db/repo.js";
 import { parseUserIds, humanKind } from "../../util/access.js";
 import { makeEmbed, btn, rowsFromButtons, select, modal, input } from "../../ui/ui.js";
@@ -237,6 +237,7 @@ async function famenuConfig(interaction, ctx) {
   const buttons = [
     btn("famenu:config:roles", "Roluri de acces", ButtonStyle.Secondary, "🔐"),
     btn("famenu:config:channels", "Canale", ButtonStyle.Secondary, "📣"),
+    btn("famenu:config:policies", "Politici cooldown", ButtonStyle.Secondary, "⏱️"),
     btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️"),
   ];
   return sendEphemeral(interaction, emb.data.title, emb.data.description, rowsFromButtons(buttons));
@@ -283,6 +284,40 @@ function setRoleModal(which) {
 function setChannelModal(which) {
   return modal(`famenu:setchannel_modal:${which}`, "Set Channel ID", [
     input("channel_id", "Channel ID ", undefined, true, "Ex: 123")
+  ]);
+}
+
+function policySettingsView(ctx) {
+  const emb = makeEmbed("Politici cooldown/transfer", "Setează durate și retry-uri.");
+  const transferMs = Number.parseInt(getSetting(ctx.db, "transfer_cooldown_ms") || "", 10) || 60 * 60 * 1000;
+  const switchMs = Number.parseInt(getSetting(ctx.db, "org_switch_cooldown_ms") || "", 10) || 3 * 60 * 60 * 1000;
+  const reqExpMs = Number.parseInt(getSetting(ctx.db, "transfer_request_expiry_ms") || "", 10) || 24 * 60 * 60 * 1000;
+  const retryCount = Number.parseInt(getSetting(ctx.db, "transfer_complete_retry_count") || "", 10) || 2;
+  const retryBackoff = Number.parseInt(getSetting(ctx.db, "transfer_complete_retry_backoff_ms") || "", 10) || 60 * 1000;
+
+  emb.setDescription([
+    emb.data.description,
+    `• Transfer cooldown: **${Math.round(transferMs / 60000)} min**`,
+    `• Remove fără PK cooldown: **${Math.round(switchMs / 60000)} min**`,
+    `• Expirare request transfer: **${Math.round(reqExpMs / 60000)} min**`,
+    `• Retry completare transfer: **${retryCount}**`,
+    `• Backoff retry completare: **${Math.round(retryBackoff / 1000)}s**`
+  ].join("\n"));
+
+  const buttons = [
+    btn("famenu:config:policies:set", "Set policies", ButtonStyle.Secondary, "🛠️"),
+    btn("famenu:back", "Back", ButtonStyle.Secondary, "⬅️")
+  ];
+  return { emb, rows: rowsFromButtons(buttons) };
+}
+
+function policySettingsModal() {
+  return modal("famenu:config_policies_modal", "Set politici cooldown/transfer", [
+    input("transfer_cooldown", "Transfer cooldown (ex: 60m, 2h)", undefined, true, "60m"),
+    input("org_switch_cooldown", "Remove fără PK cooldown (ex: 3h)", undefined, true, "3h"),
+    input("request_expiry", "Expirare request transfer (ex: 24h)", undefined, true, "24h"),
+    input("retry_count", "Retry completare transfer (număr)", undefined, true, "2"),
+    input("retry_backoff", "Retry backoff (ex: 60s, 2m)", undefined, true, "60s")
   ]);
 }
 
@@ -722,6 +757,15 @@ export async function handleFamenuComponent(interaction, ctx) {
     const view = configChannelsView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
+  if (id === "famenu:config:policies") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    const view = policySettingsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+  if (id === "famenu:config:policies:set") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+    return showModalSafe(interaction, policySettingsModal());
+  }
 
   if (id === "famenu:reconcile_global") {
     if (!requireStaff(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar staff poate folosi această acțiune.");
@@ -937,6 +981,47 @@ export async function handleFamenuModal(interaction, ctx) {
     if (k) ctx.settings[k] = channelId || null;
     await audit(ctx, "⚙️ Config canal", `**${which}:** ${channelId ? `<#${channelId}>` : "—"}\n**De către:** <@${ctx.uid}>`, COLORS.GLOBAL);
     const view = configChannelsView(ctx);
+    return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
+  }
+
+  if (id === "famenu:config_policies_modal") {
+    if (!requireConfigManager(ctx)) return sendEphemeral(interaction, "⛔ Acces refuzat", "Doar owner sau rolul de config.");
+
+    const transferCdRaw = interaction.fields.getTextInputValue("transfer_cooldown")?.trim();
+    const orgSwitchRaw = interaction.fields.getTextInputValue("org_switch_cooldown")?.trim();
+    const reqExpiryRaw = interaction.fields.getTextInputValue("request_expiry")?.trim();
+    const retryCountRaw = interaction.fields.getTextInputValue("retry_count")?.trim();
+    const retryBackoffRaw = interaction.fields.getTextInputValue("retry_backoff")?.trim();
+
+    const transferMs = parseDurationMs(transferCdRaw);
+    const orgSwitchMs = parseDurationMs(orgSwitchRaw);
+    const reqExpiryMs = parseDurationMs(reqExpiryRaw);
+    const retryCount = Number.parseInt(retryCountRaw || "", 10);
+    const retryBackoffMs = parseDurationMs(retryBackoffRaw);
+
+    if (!transferMs || !orgSwitchMs || !reqExpiryMs || !retryBackoffMs) {
+      return sendEphemeral(interaction, "Eroare", "Durate invalide. Exemple: 60m, 3h, 24h, 60s.");
+    }
+    if (!Number.isFinite(retryCount) || retryCount < 0 || retryCount > 10) {
+      return sendEphemeral(interaction, "Eroare", "Retry count invalid (0..10).");
+    }
+
+    setSetting(ctx.db, "transfer_cooldown_ms", String(transferMs));
+    setSetting(ctx.db, "org_switch_cooldown_ms", String(orgSwitchMs));
+    setSetting(ctx.db, "transfer_request_expiry_ms", String(reqExpiryMs));
+    setSetting(ctx.db, "transfer_complete_retry_count", String(retryCount));
+    setSetting(ctx.db, "transfer_complete_retry_backoff_ms", String(retryBackoffMs));
+
+    await audit(ctx, "⚙️ Config politici cooldown", [
+      `**Transfer cooldown:** ${Math.round(transferMs / 60000)} min`,
+      `**Remove fără PK cooldown:** ${Math.round(orgSwitchMs / 60000)} min`,
+      `**Expirare request transfer:** ${Math.round(reqExpiryMs / 60000)} min`,
+      `**Retry completare transfer:** ${retryCount}`,
+      `**Backoff retry completare:** ${Math.round(retryBackoffMs / 1000)}s`,
+      `**De către:** <@${ctx.uid}>`
+    ].join("\n"), COLORS.GLOBAL);
+
+    const view = policySettingsView(ctx);
     return sendEphemeral(interaction, view.emb.data.title, view.emb.data.description, view.rows);
   }
 

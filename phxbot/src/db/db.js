@@ -101,6 +101,7 @@ export function ensureSchema(db) {
   ensureColumn("orgs", "co_leader_role_id", "co_leader_role_id TEXT");
   ensureColumn("orgs", "member_role_id", "member_role_id TEXT NOT NULL DEFAULT ''");
   ensureColumn("orgs", "member_cap", "member_cap INTEGER");
+  ensureColumn("transfer_requests", "retry_count", "retry_count INTEGER NOT NULL DEFAULT 0");
 
   const orgCols = db.prepare("PRAGMA table_info(orgs)").all().map(r => r.name);
   if (orgCols.includes("type")) {
@@ -118,6 +119,11 @@ export function ensureSchema(db) {
     ["ban_role_id", ""],
     ["brand_text", "Phoenix Faction Manager"],
     ["brand_icon_url", ""],
+    ["transfer_cooldown_ms", String(60 * 60 * 1000)],
+    ["org_switch_cooldown_ms", String(3 * 60 * 60 * 1000)],
+    ["transfer_request_expiry_ms", String(24 * 60 * 60 * 1000)],
+    ["transfer_complete_retry_count", "2"],
+    ["transfer_complete_retry_backoff_ms", String(60 * 1000)],
   ];
   const upsert = db.prepare("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)");
   for (const [k,v] of defaults) upsert.run(k,v);
