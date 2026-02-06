@@ -27,8 +27,15 @@ function envBool(name, defaultValue = false) {
   return defaultValue;
 }
 
-const ORG_REAPPLY_ON_JOIN = envBool("ORG_REAPPLY_ON_JOIN", true);
-const COOLDOWN_REAPPLY_ON_JOIN = envBool("COOLDOWN_REAPPLY_ON_JOIN", true);
+function settingBool(db, key, defaultValue, envKey) {
+  const raw = getSetting(db, key);
+  if (raw !== "") {
+    const v = String(raw).trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(v)) return true;
+    if (["0", "false", "no", "n", "off"].includes(v)) return false;
+  }
+  return envKey ? envBool(envKey, defaultValue) : defaultValue;
+}
 
 const client = new Client({
   intents: [
@@ -56,7 +63,10 @@ client.on("guildMemberAdd", async (member) => {
     const pkRole = getSetting(db, "pk_role_id");
     const banRole = getSetting(db, "ban_role_id");
 
-    if (ORG_REAPPLY_ON_JOIN) {
+    const orgReapplyOnJoin = settingBool(db, "org_reapply_on_join", true, "ORG_REAPPLY_ON_JOIN");
+    const cooldownReapplyOnJoin = settingBool(db, "cooldown_reapply_on_join", true, "COOLDOWN_REAPPLY_ON_JOIN");
+
+    if (orgReapplyOnJoin) {
       const mem = repo.getMembership(db, member.id);
       if (mem?.org_id) {
         const org = repo.getOrg(db, mem.org_id);
@@ -83,7 +93,7 @@ client.on("guildMemberAdd", async (member) => {
       }
     }
 
-    if (COOLDOWN_REAPPLY_ON_JOIN) {
+    if (cooldownReapplyOnJoin) {
       const pk = repo.getCooldown(db, member.id, "PK");
       const ban = repo.getCooldown(db, member.id, "BAN");
       const transferCooldown = repo.getCooldown(db, member.id, "ORG_SWITCH");

@@ -99,6 +99,7 @@ async function tick({ client, db }) {
   const transferExpiryMs = settingNumber(db, "transfer_request_expiry_ms", 24 * 60 * 60 * 1000);
   const transferRetryCount = settingNumber(db, "transfer_complete_retry_count", 2);
   const transferRetryBackoffMs = settingNumber(db, "transfer_complete_retry_backoff_ms", 60 * 1000);
+  const transferFailAuditDedupMs = settingNumber(db, "transfer_fail_audit_dedupe_ms", 2 * 60 * 1000);
   const expCooldowns = listExpiringCooldowns(db, now);
 
   const pkRole = getSetting(db, 'pk_role_id');
@@ -291,7 +292,7 @@ async function tick({ client, db }) {
           cooldown_expires_at: now + transferRetryBackoffMs
         });
         const retryReason = `Retry ${retries + 1}/${transferRetryCount} în ${Math.round(transferRetryBackoffMs / 1000)}s`;
-        if (shouldSendTransferFailAudit(req.request_id, retryReason)) {
+        if (shouldSendTransferFailAudit(req.request_id, retryReason, transferFailAuditDedupMs)) {
           transferFailAudit(auditCh, brandCtx, req, retryReason, fromOrg, toOrg);
         }
       } else {
