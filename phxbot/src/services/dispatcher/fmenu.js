@@ -1,4 +1,5 @@
 import { ActionRowBuilder, ButtonStyle, MessageFlags } from "discord.js";
+import crypto from "crypto";
 import * as repo from "../../db/repo.js";
 import { getSetting } from "../../db/db.js";
 import { hasRole, parseUserIds, humanKind } from "../../util/access.js";
@@ -10,6 +11,8 @@ import {
   PK_MS,
   DAY_MS,
   LEGAL_MIN_DAYS,
+  ORG_SWITCH_MS,
+  TRANSFER_MS,
   sendEphemeral,
   makeBrandedEmbed,
   audit,
