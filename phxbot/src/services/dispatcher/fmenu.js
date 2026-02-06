@@ -376,15 +376,12 @@ async function removeFromOrg(ctx, targetMember, orgId, byUserId, { skipOrgSwitch
     console.error(`[REMOVE] Org not found for orgId ${orgId}`);
     return { ok:false, msg:"Organizația nu există." };
   }
-// Safeguard: do NOT allow removing a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
   return { ok:false, msg:`Userul are rank **${pretty}**. Retrogradează-l mai întâi la **MEMBER** din **Set rank**, apoi încearcă din nou.` };
 }
 
-// If staff removes directly, also cleanup leader/co-leader roles to avoid leftovers.
 if (ctx.perms.staff) {
   const leadershipRoleIds = [org.leader_role_id, org.co_leader_role_id].filter(Boolean);
   for (const rid of leadershipRoleIds) {
@@ -448,8 +445,6 @@ async function applyPk(ctx, targetMember, orgId, byUserId) {
     }
     const canManage = canManageTargetRank(ctx, org, targetMember);
     if (!canManage.ok) return { ok:false, msg: canManage.msg };
-// Safeguard: do NOT allow applying PK removal to a Leader/Co-Leader directly.
-// They must be downgraded to MEMBER first via Set rank.
 const targetRank = getOrgRank(targetMember, org);
 if (!ctx.perms.staff && (targetRank === "LEADER" || targetRank === "COLEADER")) {
   const pretty = targetRank === "LEADER" ? "LEADER" : "CO-LEADER";
@@ -769,7 +764,7 @@ async function processTransferDecision(ctx, orgId, requestId, action) {
     `**Țintă:** <@${req.user_id}> (\`${req.user_id}\`)`,
     `**Din:** **${fromOrg.name}**`,
     `**Către:** **${toOrg.name}**`,
-    `**Cooldown:** 1h (expiră ${formatRel(cooldownExpiresAt)})`,
+    `**Cooldown:** (${formatRel(cooldownExpiresAt)})`,
     `**De către:** <@${ctx.uid}>`
   ].join("\n"), COLORS.SUCCESS);
 
